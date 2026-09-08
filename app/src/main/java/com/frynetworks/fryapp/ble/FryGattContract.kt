@@ -25,6 +25,12 @@ object FryGattContract {
 
     /** Central requests this MTU per PROTOCOL.md section 1. */
     const val REQUESTED_MTU: Int = 185
+
+    /** Every BLE connection starts here; this is what we are on if the peripheral refuses. */
+    const val DEFAULT_ATT_MTU: Int = 23
+
+    /** ATT opcode + attribute handle overhead on a single write. */
+    const val ATT_WRITE_HEADER_BYTES: Int = 3
 }
 
 /** Status state machine — PROTOCOL.md section 2, shared with ESP8266 GET /status. */

@@ -89,9 +89,19 @@ class BleProvisioner @Inject constructor(
             }
 
             val session = GattSession(device) { event -> trySend(event) }
-            val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) { session.run(steps) }
-            if (outcome != true) {
-                trySend(ProvisionEvent.Failed("Provisioning timed out"))
+            // try/finally, not awaitClose alone. If the collector is cancelled while suspended
+            // inside run() -- the user backing out of the provisioning screen, any time within a
+            // 60 s window -- the CancellationException propagates straight past awaitClose, which
+            // then never registers, and the GATT client handle leaks. Android has a small fixed
+            // table of concurrent GATT clients; a few leaks exhaust it and every later connect
+            // fails with status 133 until Bluetooth is power-cycled.
+            try {
+                val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) { session.run(steps) }
+                if (outcome != true) {
+                    trySend(ProvisionEvent.Failed("Provisioning timed out"))
+                }
+            } finally {
+                session.close()
             }
 
             awaitClose { session.close() }
@@ -106,6 +116,13 @@ class BleProvisioner @Inject constructor(
         private var connectResult = CompletableDeferred<GattOpResult<Unit>>()
         private var servicesResult: CompletableDeferred<GattOpResult<Unit>>? = null
         private var mtuResult: CompletableDeferred<GattOpResult<Unit>>? = null
+
+        /**
+         * ATT MTU actually in force. 23 is the BLE default every connection starts at, and it is
+         * what we are still on if the peripheral refuses our request. Usable payload per single
+         * ATT write is MTU minus the 3-byte opcode+handle header.
+         */
+        private var negotiatedMtu: Int = FryGattContract.DEFAULT_ATT_MTU
         private val readResults = HashMap<UUID, CompletableDeferred<GattOpResult<ByteArray>>>()
         private val writeResults = HashMap<UUID, CompletableDeferred<GattOpResult<Unit>>>()
         private val descriptorResults = HashMap<UUID, CompletableDeferred<GattOpResult<Unit>>>()
@@ -132,6 +149,7 @@ class BleProvisioner @Inject constructor(
             }
 
             override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu
                 mtuResult?.let { if (!it.isCompleted) it.complete(GattOpResult(status, Unit)) }
             }
 
@@ -170,7 +188,12 @@ class BleProvisioner @Inject constructor(
 
             private fun handleNotification(uuid: UUID, value: ByteArray) {
                 if (uuid != FryGattContract.CHAR_STATUS || value.isEmpty()) return
-                val decoded = ProvisioningReducer.fromStatusBytes(value)
+                // Runs inside a binder callback: an exception here would kill the process.
+                val decoded = ProvisioningReducer.fromStatusBytesOrNull(value)
+                if (decoded == null) {
+                    Log.w(TAG, "ignoring unrecognised status payload (${value.size} bytes)")
+                    return
+                }
                 emit(ProvisionEvent.StatusUpdate(decoded))
                 if (decoded.state == ProvState.CONNECTED ||
                     decoded.state == ProvState.ERROR
@@ -287,6 +310,18 @@ class BleProvisioner @Inject constructor(
         @SuppressLint("MissingPermission")
         private suspend fun writeChar(uuid: UUID, value: ByteArray): Boolean {
             val characteristic = gatt.getService(FryGattContract.SERVICE_FRY)?.getCharacteristic(uuid) ?: return false
+            // A single ATT Write Request carries at most MTU-3 bytes. Android does not promise to
+            // fragment an oversized value for us, so if the peripheral refused our MTU bump the
+            // 58-byte wallet would go out truncated -- silently writing a different address than
+            // the user typed. Drive the prepared-write procedure ourselves in that case.
+            val needsLongWrite = value.size > (negotiatedMtu - FryGattContract.ATT_WRITE_HEADER_BYTES)
+            if (needsLongWrite) {
+                Log.w(
+                    TAG,
+                    "payload ${value.size}B exceeds MTU $negotiatedMtu; using prepared write",
+                )
+                return writeCharLong(characteristic, uuid, value)
+            }
             return opMutex.withLock {
                 suspend fun attempt(): GattOpResult<Unit> {
                     val deferred = CompletableDeferred<GattOpResult<Unit>>()
@@ -318,6 +353,58 @@ class BleProvisioner @Inject constructor(
                 }
                 result.status == BluetoothGatt.GATT_SUCCESS
             }
+        }
+
+        /**
+         * Prepared ("long") write: begin a reliable-write transaction, issue the value, then
+         * execute it. The stack fragments the payload across ATT Prepare Write packets and the
+         * peripheral reassembles on Execute. Bails out and aborts the transaction on any failure
+         * so a half-written value is never committed.
+         */
+        @SuppressLint("MissingPermission")
+        private suspend fun writeCharLong(
+            characteristic: BluetoothGattCharacteristic,
+            uuid: UUID,
+            value: ByteArray,
+        ): Boolean = opMutex.withLock {
+            if (!gatt.beginReliableWrite()) {
+                Log.w(TAG, "beginReliableWrite rejected")
+                return@withLock false
+            }
+            val deferred = CompletableDeferred<GattOpResult<Unit>>()
+            writeResults[uuid] = deferred
+            val issued = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(
+                    characteristic,
+                    value,
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                ) == BluetoothGatt.GATT_SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    characteristic.value = value
+                    gatt.writeCharacteristic(characteristic)
+                }
+            }
+            if (!issued) {
+                writeResults.remove(uuid)
+                gatt.abortReliableWrite()
+                return@withLock false
+            }
+            val result = withTimeoutOrNull(OP_TIMEOUT_MS) { deferred.await() }
+                ?: GattOpResult(GATT_TIMEOUT, null)
+            if (result.status != BluetoothGatt.GATT_SUCCESS) {
+                gatt.abortReliableWrite()
+                return@withLock false
+            }
+            // executeReliableWrite completes via onReliableWriteCompleted; a false return means
+            // the stack would not even start it.
+            if (!gatt.executeReliableWrite()) {
+                gatt.abortReliableWrite()
+                return@withLock false
+            }
+            true
         }
 
         @SuppressLint("MissingPermission")
