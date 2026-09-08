@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <!-- The ESP8266 SoftAP (PROTOCOL.md section 3) is a fixed-IP, no-internet HTTP-only
+         peripheral. Cleartext is scoped to exactly this address, nowhere else. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.4.1</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug-only fallback: some OEM WebView/OkHttp stacks on emulators and test devices
+         mishandle IP-literal domain-config entries. The release build relies solely on
+         res/xml/network_security_config.xml scoping cleartext to 192.168.4.1; debug builds
+         additionally allow it app-wide as a safety net during on-hardware bring-up. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>
