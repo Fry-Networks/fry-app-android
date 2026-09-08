@@ -6,6 +6,8 @@ import com.frynetworks.fryapp.ble.ProvState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ProvisioningReducerTest {
@@ -67,5 +69,38 @@ class ProvisioningReducerTest {
             // expected — and since plan() builds the whole list only after validation
             // succeeds, no WriteStep is ever constructed on this path.
         }
+    }
+
+    @Test
+    fun `unknown state code is rejected by the strict decoder`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ProvisioningReducer.fromStatusBytes(byteArrayOf(9))
+        }
+    }
+
+    @Test
+    fun `unknown state code returns null from the tolerant decoder instead of throwing`() {
+        assertNull(ProvisioningReducer.fromStatusBytesOrNull(byteArrayOf(9)))
+    }
+
+    @Test
+    fun `unknown error code degrades to NONE rather than failing the whole decode`() {
+        // Only the STATE code is strict. ProvError.fromCode already falls back to NONE, so an
+        // unrecognised error byte must still yield a usable ERROR status rather than nothing.
+        val decoded = ProvisioningReducer.fromStatusBytesOrNull(byteArrayOf(4, 99))
+        assertEquals(ProvState.ERROR, decoded?.state)
+        assertEquals(ProvError.NONE, decoded?.error)
+    }
+
+    @Test
+    fun `tolerant decoder still decodes a valid payload`() {
+        val decoded = ProvisioningReducer.fromStatusBytesOrNull(byteArrayOf(4, 2))
+        assertEquals(ProvState.ERROR, decoded?.state)
+        assertEquals(ProvError.WIFI_AUTH_FAILED, decoded?.error)
+    }
+
+    @Test
+    fun `empty payload returns null from the tolerant decoder`() {
+        assertNull(ProvisioningReducer.fromStatusBytesOrNull(byteArrayOf()))
     }
 }

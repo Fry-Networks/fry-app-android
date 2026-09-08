@@ -132,11 +132,27 @@ class WifiProvisioner @Inject constructor(
             // timeout or user decline.
             connectivityManager.requestNetwork(request, callback, JOIN_TIMEOUT_MS)
 
+            // Idempotent, because the try/finally below and the awaitClose blocks can both fire.
+            val unregistered = java.util.concurrent.atomic.AtomicBoolean(false)
+            fun unregisterOnce() {
+                if (unregistered.compareAndSet(false, true)) {
+                    runCatching { connectivityManager.unregisterNetworkCallback(callback) }
+                }
+            }
+
+            // try/finally around every suspend point, not awaitClose alone. If the collector is
+            // cancelled while we are waiting to join or polling /status -- the user backing out of
+            // the provisioning screen -- awaitClose is never reached and the callback stays
+            // registered, leaving the process steered at an internet-less network. That is exactly
+            // the failure this class documents itself as avoiding. Repeated leaks also count
+            // against the per-UID NetworkRequest cap.
+            try {
+
             val network = withTimeoutOrNull(JOIN_TIMEOUT_MS.toLong() + 1_000) { networkDeferred.await() }
             if (network == null) {
                 trySend(SoftApEvent.Failed("Failed to join $apSsid"))
                 close()
-                awaitClose { runCatching { connectivityManager.unregisterNetworkCallback(callback) } }
+                awaitClose { unregisterOnce() }
                 return@callbackFlow
             }
 
@@ -156,7 +172,7 @@ class WifiProvisioner @Inject constructor(
             } catch (e: Exception) {
                 trySend(SoftApEvent.Failed("GET /info failed: ${e.message}"))
                 close()
-                awaitClose { runCatching { connectivityManager.unregisterNetworkCallback(callback) } }
+                awaitClose { unregisterOnce() }
                 return@callbackFlow
             }
             trySend(SoftApEvent.Info(info))
@@ -174,7 +190,7 @@ class WifiProvisioner @Inject constructor(
             } catch (e: Exception) {
                 trySend(SoftApEvent.Failed("POST /provision failed: ${e.message}"))
                 close()
-                awaitClose { runCatching { connectivityManager.unregisterNetworkCallback(callback) } }
+                awaitClose { unregisterOnce() }
                 return@callbackFlow
             }
             trySend(SoftApEvent.ProvisionAccepted)
@@ -205,6 +221,9 @@ class WifiProvisioner @Inject constructor(
             }
 
             close()
-            awaitClose { runCatching { connectivityManager.unregisterNetworkCallback(callback) } }
+            awaitClose { unregisterOnce() }
+            } finally {
+                unregisterOnce()
+            }
         }
 }

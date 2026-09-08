@@ -120,12 +120,18 @@ class ProvisionViewModel @Inject constructor(
                                     persistAndSucceed()
                                     return@collect
                                 }
+                                // Codes come straight from the device's /status JSON, so an
+                                // unknown value must not throw out of viewModelScope.
                                 PROV_STATUS_ERROR_CODE ->
-                                    _state.value =
-                                        ProvisionUiState.Error(errorMessage(ProvError.fromCode(event.status.err)))
+                                    _state.value = ProvisionUiState.Error(
+                                        runCatching { errorMessage(ProvError.fromCode(event.status.err)) }
+                                            .getOrDefault("Device reported an error"),
+                                    )
                                 else ->
-                                    _state.value =
-                                        ProvisionUiState.InProgress(stateLabel(ProvState.fromCode(event.status.status)))
+                                    _state.value = ProvisionUiState.InProgress(
+                                        runCatching { stateLabel(ProvState.fromCode(event.status.status)) }
+                                            .getOrDefault("Working…"),
+                                    )
                             }
                         }
                         is SoftApEvent.Failed -> _state.value = ProvisionUiState.Error(event.reason)
