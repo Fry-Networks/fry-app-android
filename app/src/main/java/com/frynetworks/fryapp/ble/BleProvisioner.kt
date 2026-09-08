@@ -12,6 +12,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.frynetworks.fryapp.provisioning.ProvStatus
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.frynetworks.fryapp.provisioning.ProvisioningReducer
 import com.frynetworks.fryapp.provisioning.WriteStep
 import kotlinx.coroutines.CompletableDeferred
@@ -64,7 +65,7 @@ private const val LINK_SETTLE_MS = 300L
  */
 @Singleton
 class BleProvisioner @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
 ) {
     private val opMutex = Mutex()
 

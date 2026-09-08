@@ -12,6 +12,7 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import com.google.gson.Gson
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
@@ -69,7 +70,7 @@ private const val PROV_STATUS_ERROR = 4
  */
 @Singleton
 class WifiProvisioner @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
 ) {
     @SuppressLint("MissingPermission")
     fun scanForSoftApSsids(): Flow<String> = callbackFlow {

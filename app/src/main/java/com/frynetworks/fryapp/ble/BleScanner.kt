@@ -8,6 +8,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -30,7 +31,7 @@ data class BleFoundDevice(
  */
 @Singleton
 class BleScanner @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
 ) {
     @SuppressLint("MissingPermission")
     fun scan(): Flow<BleFoundDevice> = callbackFlow {
