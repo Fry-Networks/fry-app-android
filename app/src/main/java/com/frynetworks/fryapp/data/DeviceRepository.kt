@@ -24,6 +24,9 @@ class DeviceRepository @Inject constructor(
 ) {
     fun observeDevices(): Flow<List<Device>> = dao.observeAll()
 
+    /** One-shot re-read backing Home's pull-to-refresh gesture. */
+    suspend fun refreshOnce(): List<Device> = dao.getAllOnce()
+
     suspend fun upsert(device: Device) = dao.upsert(device)
 
     suspend fun remove(minerKey: String) = dao.deleteByMinerKey(minerKey)
