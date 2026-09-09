@@ -26,6 +26,26 @@ private val FryColorScheme = darkColorScheme(
     surfaceVariant = FryCard,
     onSurfaceVariant = FryTextSecondary,
     error = FryPrimary,
+    onError = FryTextPrimary,
+    // The *Container roles are not decorative extras: Material3 draws the FAB from
+    // primaryContainer and the NavigationBar's selected-item pill from secondaryContainer.
+    // Leaving them unset let the library's default purple through on both, which is very
+    // visible on an otherwise Fry-branded screen (observed on the S22 home screen).
+    primaryContainer = FryPrimary,
+    onPrimaryContainer = FryTextPrimary,
+    secondaryContainer = FryCard,
+    onSecondaryContainer = FrySecondary,
+    tertiaryContainer = FryCard,
+    onTertiaryContainer = FrySecondary,
+    errorContainer = FryCard,
+    onErrorContainer = FryPrimary,
+    surfaceContainer = FryCard,
+    surfaceContainerHigh = FryCard,
+    surfaceContainerHighest = FryCard,
+    surfaceContainerLow = FrySurface,
+    surfaceContainerLowest = FryBackground,
+    outline = FryTextSecondary,
+    outlineVariant = FryCard,
 )
 
 /** Dark-only Material3 theme — no dynamic colour, regardless of Android version. */
