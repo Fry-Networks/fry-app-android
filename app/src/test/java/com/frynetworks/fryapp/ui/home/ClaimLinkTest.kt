@@ -2,6 +2,7 @@ package com.frynetworks.fryapp.ui.home
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ClaimLinkTest {
@@ -9,9 +10,10 @@ class ClaimLinkTest {
     private val wallet = "HXWYLLZDPTM5OXS3DPARMTG52RSBMMCQNKT4L2LZRRXYPNAWJBT6VIW6WU"
 
     @Test
-    fun `builds the dashboard claim URL with the wallet as a query param`() {
-        val url = ClaimLink.build(wallet)
-        assertEquals("https://dashboard.frynetworks.com/claim?wallet=$wallet", url)
+    fun `returns the exact verified rewards-claim URL`() {
+        // Asserts the literal final string, not just a host/prefix check, so a future edit
+        // cannot silently reintroduce the 404'ing /claim?wallet=... URL this replaced.
+        assertEquals("https://dashboard.frynetworks.com/rewards-claim", ClaimLink.build(wallet))
     }
 
     @Test
@@ -21,8 +23,9 @@ class ClaimLinkTest {
     }
 
     @Test
-    fun `special characters in the wallet are URL-encoded`() {
-        val url = ClaimLink.build("A B+C")
-        assertEquals("https://dashboard.frynetworks.com/claim?wallet=A+B%2BC", url)
+    fun `the wallet value is never appended to the URL`() {
+        val url = requireNotNull(ClaimLink.build(wallet))
+        assertFalse(url.contains(wallet))
+        assertFalse(url.contains("?"))
     }
 }

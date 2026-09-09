@@ -24,6 +24,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.frynetworks.fryapp.ble.ProvState
 import com.frynetworks.fryapp.data.UpdateCheckResult
+import com.frynetworks.fryapp.ui.home.ClaimLink
 
 private const val MILLIS_PER_SECOND = 1000L
 private const val SECONDS_PER_MINUTE = 60
@@ -72,11 +73,10 @@ fun DeviceDetailScreen(
 
                 Spacer(Modifier.height(16.dp))
                 TextButton(
-                    onClick = {
-                        uriHandler.openUri(
-                            "https://dashboard.frynetworks.com/rewards?minerKey=${currentDevice.minerKey}"
-                        )
-                    },
+                    // Was "/rewards?minerKey=..." — that route 404s (shipped broken in v0.1.0
+                    // and v0.1.1). ClaimLink.CLAIM_URL is the verified /rewards-claim page,
+                    // which takes no query string.
+                    onClick = { uriHandler.openUri(ClaimLink.CLAIM_URL) },
                     modifier = Modifier
                         .testTag("device_claim_link")
                         .semantics { contentDescription = "Open rewards dashboard" },
