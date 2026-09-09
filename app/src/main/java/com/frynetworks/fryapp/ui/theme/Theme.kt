@@ -6,6 +6,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 val FryBackground = Color(0xFF09090B)
+val FrySurface = Color(0xFF1A1A1E)
+val FryCard = Color(0xFF242428)
 val FryPrimary = Color(0xFFE5271C)
 val FrySecondary = Color(0xFF00C49A)
 val FryTextPrimary = Color(0xFFEFECEA)
@@ -19,9 +21,9 @@ private val FryColorScheme = darkColorScheme(
     tertiary = FrySecondary,
     background = FryBackground,
     onBackground = FryTextPrimary,
-    surface = FryBackground,
+    surface = FrySurface,
     onSurface = FryTextPrimary,
-    surfaceVariant = FryBackground,
+    surfaceVariant = FryCard,
     onSurfaceVariant = FryTextSecondary,
     error = FryPrimary,
 )
