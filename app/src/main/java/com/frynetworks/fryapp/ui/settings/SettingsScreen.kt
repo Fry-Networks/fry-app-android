@@ -28,8 +28,11 @@ import com.frynetworks.fryapp.BuildConfig
 /** Public links surfaced from Settings. Not a fleet/API credential — plain marketing/docs URLs. */
 private object FryLinks {
     const val DASHBOARD = "https://dashboard.frynetworks.com"
-    const val DOCS = "https://docs.frynetworks.com"
-    const val DISCORD = "https://frynetworks.com/discord"
+    // The site's own /docs redirect lands here, so use the canonical target directly.
+    const val DOCS = "https://docs.frynetworks.com/docs/"
+    // Verified against the live frynetworks.com, which links here; the previous
+    // https://frynetworks.com/discord was a placeholder and returns 404.
+    const val DISCORD = "https://discord.gg/frynetworks"
 }
 
 @Composable
