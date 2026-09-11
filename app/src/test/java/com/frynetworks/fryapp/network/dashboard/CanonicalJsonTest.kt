@@ -28,7 +28,7 @@ class CanonicalJsonTest {
         e.isJsonObject -> LinkedHashMap<String, Any?>().apply { e.asJsonObject.entrySet().forEach { (k, v) -> put(k, toKotlin(v)) } }
         e.asJsonPrimitive.isBoolean -> e.asBoolean
         e.asJsonPrimitive.isString -> e.asString
-        else -> e.asJsonPrimitive.asBigDecimal.let { if (it.scale() <= 0) it.toLong() else it.toDouble() }
+        else -> e.asJsonPrimitive.asBigDecimal.let { if (it.scale() <= 0) it.toLong() else it }
     }
 
     @Test
@@ -57,6 +57,14 @@ class CanonicalJsonTest {
     @Test
     fun `non-ASCII characters are emitted raw like JSON stringify`() {
         assertEquals("\"café — 中\"", JsJson.stringify("café — 中"))
+    }
+
+    @Test
+    fun `BigDecimal amounts print like JS numbers`() {
+        assertEquals("{\"amount\":2.5}", JsJson.stringify(mapOf("amount" to java.math.BigDecimal("2.50"))))
+        assertEquals("{\"amount\":800}", JsJson.stringify(mapOf("amount" to java.math.BigDecimal("8E+2"))))
+        assertEquals("{\"amount\":40}", JsJson.stringify(mapOf("amount" to java.math.BigDecimal("40"))))
+        assertEquals("{\"amount\":0.1}", JsJson.stringify(mapOf("amount" to java.math.BigDecimal("0.10"))))
     }
 
     @Test

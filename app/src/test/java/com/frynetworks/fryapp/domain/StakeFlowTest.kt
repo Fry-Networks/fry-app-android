@@ -27,24 +27,63 @@ class StakeFlowTest {
 
     // --- Loading -> Ready ---
 
+    private val verificationProduct = Product(
+        key = "FEM",
+        reward = ProductReward(stake = ProductStake(stakeOne = BigDecimal("5.00"), stakeTwo = BigDecimal("20.00"))),
+    )
+
+    private fun loadingVerification(tier: StakeTier, byod: Boolean = false) = StakeState.Loading(
+        product = verificationProduct,
+        price = price,
+        context = StakeContext.Verification(tier),
+        byod = byod,
+        asset = FryAsset.TFRY,
+    )
+
+    @Test
+    fun `verification tier ONE stakes stake_one tokens as-is, never divided by the price`() {
+        // Stake.tsx:218-229 — the old code computed floor(5 / 0.05) = 100 tokens here.
+        val next = reduce(loadingVerification(StakeTier.ONE), StakeEvent.Start)
+        assertEquals(StakeState.Ready(amount = BigDecimal("5"), asset = FryAsset.TFRY, usd = BigDecimal("0.25")), next)
+    }
+
+    @Test
+    fun `verification tier TWO stakes stake_two tokens`() {
+        val next = reduce(loadingVerification(StakeTier.TWO), StakeEvent.Start)
+        assertEquals(StakeState.Ready(amount = BigDecimal("20"), asset = FryAsset.TFRY, usd = BigDecimal("1.00")), next)
+    }
+
+    @Test
+    fun `BYOD halves the verification token amount to two decimals and keeps it fractional`() {
+        val next = reduce(loadingVerification(StakeTier.ONE, byod = true), StakeEvent.Start)
+        assertEquals(StakeState.Ready(amount = BigDecimal("2.5"), asset = FryAsset.TFRY, usd = BigDecimal("0.13")), next)
+    }
+
+    @Test
+    fun `verification without stake tiers on the product fails as no stake amount`() {
+        val loading = StakeState.Loading(product, price, StakeContext.Verification(StakeTier.ONE), byod = false, asset = FryAsset.TFRY)
+        val next = reduce(loading, StakeEvent.Start)
+        assertTrue("$next", next is StakeState.Failed && !next.recoverable)
+    }
+
     @Test
     fun `Loading plus Start computes Ready from StakeMath registrationUsd and tokensFor`() {
         val next = reduce(loadingRegistration(), StakeEvent.Start)
         // 40.00 usd / 0.05 price = 800 tokens
-        assertEquals(StakeState.Ready(amount = 800L, asset = FryAsset.TFRY, usd = BigDecimal("40.00")), next)
+        assertEquals(StakeState.Ready(amount = BigDecimal("800"), asset = FryAsset.TFRY, usd = BigDecimal("40.00")), next)
     }
 
     @Test
     fun `Loading plus Start halves the usd amount for BYOD`() {
         val next = reduce(loadingRegistration(byod = true), StakeEvent.Start)
-        assertEquals(StakeState.Ready(amount = 400L, asset = FryAsset.TFRY, usd = BigDecimal("20.00")), next)
+        assertEquals(StakeState.Ready(amount = BigDecimal("400"), asset = FryAsset.TFRY, usd = BigDecimal("20.00")), next)
     }
 
     @Test
     fun `Loading plus Start computes node stake amounts for the Node context`() {
         val loading = StakeState.Loading(product, price, StakeContext.Node, byod = false, asset = FryAsset.FNODE)
         val next = reduce(loading, StakeEvent.Start)
-        assertEquals(StakeState.Ready(amount = 2000L, asset = FryAsset.FNODE, usd = BigDecimal("100.00")), next)
+        assertEquals(StakeState.Ready(amount = BigDecimal("2000"), asset = FryAsset.FNODE, usd = BigDecimal("100.00")), next)
     }
 
     @Test
@@ -72,7 +111,7 @@ class StakeFlowTest {
 
     @Test
     fun `Ready plus AmountConfirmed moves to CheckingBalances`() {
-        val ready = StakeState.Ready(800L, FryAsset.TFRY, BigDecimal("40.00"))
+        val ready = StakeState.Ready(BigDecimal("800"), FryAsset.TFRY, BigDecimal("40.00"))
         assertEquals(StakeState.CheckingBalances, reduce(ready, StakeEvent.AmountConfirmed))
     }
 
@@ -249,7 +288,7 @@ class StakeFlowTest {
     @Test
     fun `Cancel fails every non-terminal state as CANCELLED recoverable`() {
         val states = listOf(
-            StakeState.Ready(800L, FryAsset.TFRY, BigDecimal("40.00")),
+            StakeState.Ready(BigDecimal("800"), FryAsset.TFRY, BigDecimal("40.00")),
             StakeState.CheckingBalances,
             StakeState.OptInRequired(assetId),
             StakeState.Precheck,

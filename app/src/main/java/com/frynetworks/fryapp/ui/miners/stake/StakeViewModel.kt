@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -410,7 +411,7 @@ class StakeViewModel(
         try {
             val result = stakes.submit(
                 context,
-                StakeSubmitPayload(address = address, minerKey = key, txId = txId, amount = BigDecimal.valueOf(plan.amount), assetId = plan.asset.id),
+                StakeSubmitPayload(address = address, minerKey = key, txId = txId, amount = plan.amount, assetId = plan.asset.id),
             )
             dispatch(StakeEvent.Recorded(result.txId ?: txId, result.waived))
             runCatching { miners.refreshDetail(key) }
@@ -462,7 +463,9 @@ class StakeViewModel(
         const val WAIT_ROUNDS = 4
         private const val MICRO_PER_TOKEN = 1_000_000L
 
-        fun microFor(tokens: Long): Long = tokens * MICRO_PER_TOKEN
+        /** Display tokens -> on-chain micro units (6 decimals), e.g. `2.5` -> `2500000`. */
+        fun microFor(tokens: BigDecimal): Long =
+            tokens.multiply(BigDecimal.valueOf(MICRO_PER_TOKEN)).setScale(0, RoundingMode.HALF_UP).longValueExact()
 
         /** Stake-note `action` per context (Stake.tsx:493-498). */
         fun actionFor(context: StakeContext): String = when (context) {

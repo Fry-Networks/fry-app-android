@@ -25,6 +25,7 @@ const bodies = [
   { miner_keys: ["A", "B"] },
   { groupId: "g1", signedUserLegB64: "AAAA" },
   { txId: "T", address: "ADDR", miner_key: "K", amount: 12, asset_id: "2681521901" },
+  { miner_key: "K", address: "ADDR", txId: "T", amount: 2.5, type: "one", asset_id: "2681521901" },
   {},
   { a: { b: [1, 2, { c: null }] }, d: false },
   { list: [] }

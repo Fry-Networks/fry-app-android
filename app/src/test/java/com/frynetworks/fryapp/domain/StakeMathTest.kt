@@ -174,7 +174,7 @@ class StakeMathTest {
             assetId = 2681521901L,
             from = "SENDERADDR",
             to = "UKVAN7ADDR",
-            amount = 40_000_000L,
+            amount = BigDecimal("40"),
             operation = "register",
             timestampMillis = 1_700_000_000_000L,
         )
@@ -184,7 +184,7 @@ class StakeMathTest {
         )
         assertEquals(
             "{\"action\":\"stake\",\"miner_key\":\"FEM-ABCDEF\",\"asset_id\":2681521901,\"from\":\"SENDERADDR\"," +
-                "\"to\":\"UKVAN7ADDR\",\"amount\":40000000,\"operation\":\"register\",\"timestamp\":1700000000000}",
+                "\"to\":\"UKVAN7ADDR\",\"amount\":40,\"operation\":\"register\",\"timestamp\":1700000000000}",
             JsJson.stringify(note),
         )
     }
@@ -198,7 +198,7 @@ class StakeMathTest {
             type = "one",
             from = "SENDERADDR",
             to = "UKVAN7ADDR",
-            amount = 5_000_000L,
+            amount = BigDecimal("2.50"),
             operation = "verification",
             timestampMillis = 1_700_000_000_000L,
         )
@@ -207,5 +207,7 @@ class StakeMathTest {
             note.keys.toList(),
         )
         assertTrue(JsJson.stringify(note).contains("\"type\":\"one\""))
+        // a BYOD-halved verification amount prints like the JS number 2.5, not 2.50 or 2500000
+        assertTrue(JsJson.stringify(note).contains("\"amount\":2.5,"))
     }
 }

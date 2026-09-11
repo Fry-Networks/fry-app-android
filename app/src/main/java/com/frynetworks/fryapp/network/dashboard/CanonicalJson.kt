@@ -1,5 +1,6 @@
 package com.frynetworks.fryapp.network.dashboard
 
+import java.math.BigDecimal
 import java.math.BigInteger
 
 /**
@@ -15,6 +16,12 @@ import java.math.BigInteger
  * the dashboard flows send fits this subset; use [jsonBody] to build ordered payloads.
  */
 object JsJson {
+    /** `2.50` -> `2.5`, `8E+2` -> `800`, `40` -> `40`: JSON.stringify's shortest plain form for exact decimals. */
+    fun jsNumber(value: BigDecimal): String {
+        val stripped = value.stripTrailingZeros()
+        return (if (stripped.scale() < 0) stripped.setScale(0) else stripped).toPlainString()
+    }
+
 
     fun stringify(value: Any?): String = StringBuilder().also { write(it, value) }.toString()
 
@@ -24,6 +31,9 @@ object JsJson {
             is Boolean -> sb.append(if (value) "true" else "false")
             is String -> writeString(sb, value)
             is Int, is Long, is Short, is Byte, is BigInteger -> sb.append(value.toString())
+            // Exact decimals print the way JS prints the same number (`2.5`, `800`) — stake amounts can be
+            // fractional (BYOD verification halves). Values needing exponent form (>= 1e21) never occur here.
+            is BigDecimal -> sb.append(jsNumber(value))
             is Float, is Double -> throw IllegalArgumentException(
                 "Floating-point values are not canonicalisable (JS and Kotlin format them differently): $value",
             )

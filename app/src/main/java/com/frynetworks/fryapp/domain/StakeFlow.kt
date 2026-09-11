@@ -42,7 +42,12 @@ sealed interface StakeState {
     ) : StakeState
 
     /** The whole-token [amount] (per [StakeMath.tokensFor]) the sheet will stake, at [usd]. */
-    data class Ready(val amount: Long, val asset: FryAsset, val usd: BigDecimal) : StakeState
+    /**
+     * [amount] is the token amount in display units the sheet will stake: `floor(usd / price)`
+     * whole tokens for registration/node, or the product's `stake_one`/`stake_two` token amount for
+     * verification (halved to 2 dp for BYOD, so it may be fractional — Stake.tsx:218-229).
+     */
+    data class Ready(val amount: BigDecimal, val asset: FryAsset, val usd: BigDecimal) : StakeState
 
     /** Checking asset balance, ALGO buffer, and opt-in status. */
     data object CheckingBalances : StakeState
@@ -194,16 +199,26 @@ fun reduce(state: StakeState, event: StakeEvent): StakeState {
 }
 
 private fun computeReady(state: StakeState.Loading): StakeState {
-    val usd = when (val context = state.context) {
-        StakeContext.Registration -> StakeMath.registrationUsd(state.product, state.byod)
-        StakeContext.Node -> StakeMath.nodeUsd(state.product, state.byod)
-        is StakeContext.Verification -> StakeMath.verificationAmount(state.product, context.tier, state.byod)
-    } ?: return StakeState.Failed(
+    val noAmount = StakeState.Failed(
         CODE_NO_STAKE_AMOUNT,
         "This product has no stake amount configured for this action.",
         recoverable = false,
     )
-    val tokens = StakeMath.tokensFor(usd, state.price)
-        ?: return StakeState.Failed(CODE_INVALID_PRICE, "No valid asset price is available.", recoverable = true)
-    return StakeState.Ready(tokens, state.asset, usd)
+    return when (val context = state.context) {
+        // Stake.tsx:218-229 — stake_one/stake_two ARE the token amounts (halved for BYOD); the
+        // price is only used to show the USD equivalent, never to divide.
+        is StakeContext.Verification -> {
+            val tokens = StakeMath.verificationAmount(state.product, context.tier, state.byod) ?: return noAmount
+            val amount = StakeMath.normalizeTokens(tokens)
+            StakeState.Ready(amount, state.asset, StakeMath.usdFor(amount, state.price))
+        }
+        // Stake.tsx:232-259 — registration/node are USD amounts converted with floor(usd / price).
+        StakeContext.Registration, StakeContext.Node -> {
+            val usd = (if (context == StakeContext.Registration) StakeMath.registrationUsd(state.product, state.byod)
+            else StakeMath.nodeUsd(state.product, state.byod)) ?: return noAmount
+            val tokens = StakeMath.tokensFor(usd, state.price)
+                ?: return StakeState.Failed(CODE_INVALID_PRICE, "No valid asset price is available.", recoverable = true)
+            StakeState.Ready(BigDecimal.valueOf(tokens), state.asset, usd)
+        }
+    }
 }

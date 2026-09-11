@@ -39,7 +39,10 @@ object StakeMath {
     fun nodeUsd(product: Product, byod: Boolean): BigDecimal? =
         halveIfByod(product.reward?.stake?.node, byod)
 
-    /** The verification-tier USD amount for [product]/[tier], halved and rounded to 2dp when [byod]. */
+    /**
+     * The verification-tier TOKEN amount for [product]/[tier] (`stake_one`/`stake_two` are token
+     * counts, not USD — Stake.tsx:218-229 transfers them as-is), halved and rounded to 2dp when [byod].
+     */
     fun verificationAmount(product: Product, tier: StakeTier, byod: Boolean): BigDecimal? {
         val amount = when (tier) {
             StakeTier.ONE -> product.reward?.stake?.stakeOne
@@ -53,6 +56,16 @@ object StakeMath {
         if (!byod) return usd
         return usd.divide(TWO).setScale(2, RoundingMode.HALF_UP)
     }
+
+    /** Canonical token amount: no trailing zeros, never exponent notation (`2.50` -> `2.5`, `8E+2` -> `800`). */
+    fun normalizeTokens(amount: BigDecimal): BigDecimal {
+        val stripped = amount.stripTrailingZeros()
+        return if (stripped.scale() < 0) stripped.setScale(0) else stripped
+    }
+
+    /** USD equivalent of [tokens] at [price], rounded to cents (display only). */
+    fun usdFor(tokens: BigDecimal, price: BigDecimal): BigDecimal =
+        tokens.multiply(price).setScale(2, RoundingMode.HALF_UP)
 
     /**
      * `floor(usd / price)`, the whole-token count [usd] buys at [price] (both in display units).
@@ -88,7 +101,7 @@ object StakeMath {
         type: String? = null,
         from: String,
         to: String,
-        amount: Long,
+        amount: BigDecimal,
         operation: String,
         timestampMillis: Long,
     ): LinkedHashMap<String, Any?> {
@@ -99,7 +112,7 @@ object StakeMath {
         if (type != null) note["type"] = type
         note["from"] = from
         note["to"] = to
-        note["amount"] = amount
+        note["amount"] = normalizeTokens(amount)
         note["operation"] = operation
         note["timestamp"] = timestampMillis
         return note

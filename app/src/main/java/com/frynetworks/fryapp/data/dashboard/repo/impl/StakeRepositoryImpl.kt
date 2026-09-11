@@ -1,5 +1,6 @@
 package com.frynetworks.fryapp.data.dashboard.repo.impl
 
+import java.math.BigDecimal
 import com.frynetworks.fryapp.data.dashboard.api.DashboardApi
 import com.frynetworks.fryapp.data.dashboard.api.DashboardCalls
 import com.frynetworks.fryapp.data.dashboard.api.DashboardErrorCodes
@@ -15,7 +16,6 @@ import com.frynetworks.fryapp.network.dashboard.DashboardException
 import com.frynetworks.fryapp.network.dashboard.SessionEventBus
 import com.frynetworks.fryapp.network.dashboard.jsonBody
 import com.google.gson.Gson
-import java.math.BigInteger
 
 /**
  * Retrofit implementation of [StakeRepository]. Wire notes (dashboard snapshot):
@@ -30,7 +30,8 @@ import java.math.BigInteger
  *    429 carries `Retry-After` seconds (precheck.ts:56-58) -> `DashboardException.action`.
  *  - `registration`/`node-staking` take `{miner_key, address, txId, amount, asset_id}` and
  *    `verification` inserts `type` before `asset_id` (Stake.tsx:555-573). `amount` is a JS number
- *    of whole tokens (registration.ts:77 `typeof amount !== 'number'`); `asset_id` is a string.
+ *    of tokens (registration.ts:77 `typeof amount !== 'number'`) — whole for registration/node,
+ *    possibly fractional for BYOD verification (Stake.tsx:225 halves to 2 dp); `asset_id` is a string.
  *  - `verify-txn` answers 200 `{success:false}` when the txn is not found (verify-txn.ts:91-93).
  *  - the three withdraw routes answer `{message:"ok", txId}` with no `success` flag
  *    (r-withdraw.ts:184, n-withdraw.ts:177, stake-withdraw.ts:213).
@@ -89,7 +90,7 @@ class StakeRepositoryImpl(
     }
 
     override suspend fun submit(context: StakeContext, payload: StakeSubmitPayload): StakeSubmitResponse {
-        val amount = wholeTokens(payload)
+        val amount = jsTokens(payload)
         val body = jsonBody {
             "miner_key" to payload.minerKey
             "address" to payload.address
@@ -121,16 +122,17 @@ class StakeRepositoryImpl(
     }
 
     /**
-     * The dashboard records `amount` as a JS number of whole tokens (Stake.tsx `stakeAmount` is
-     * `floor(usd / price)`); the canonical JSON writer refuses floating point, so a fractional
-     * amount is a caller bug and is rejected before any bytes go on the wire.
+     * The dashboard records `amount` as the JS number Stake.tsx staked: whole tokens for
+     * registration/node (`floor(usd / price)`) or the product's verification amount, which BYOD
+     * halves to 2 dp. Anything finer than the ASA's 6 decimals cannot have been transferred and is
+     * rejected before any bytes go on the wire; the canonical writer prints the value like JS.
      */
-    private fun wholeTokens(payload: StakeSubmitPayload): BigInteger {
+    private fun jsTokens(payload: StakeSubmitPayload): BigDecimal {
         val stripped = payload.amount.stripTrailingZeros()
-        if (stripped.scale() > 0) {
-            throw DashboardException(DashboardErrorCodes.INVALID_INPUT, "Stake amount must be a whole number of tokens: ${payload.amount.toPlainString()}")
+        if (stripped.scale() > 6) {
+            throw DashboardException(DashboardErrorCodes.INVALID_INPUT, "Stake amount has more than 6 decimals: ${payload.amount.toPlainString()}")
         }
-        return stripped.toBigIntegerExact()
+        return if (stripped.scale() < 0) stripped.setScale(0) else stripped
     }
 
     companion object {

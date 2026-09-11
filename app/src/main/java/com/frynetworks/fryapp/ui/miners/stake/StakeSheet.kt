@@ -220,7 +220,7 @@ private fun AmountCard(plan: StakeState.Ready) {
     Card(modifier = Modifier.fillMaxWidth().testTag("stake_plan")) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text("You will stake", style = MaterialTheme.typography.labelMedium)
-            Text("${plan.amount} ${plan.asset.symbol}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("stake_amount"))
+            Text("${plan.amount.toPlainString()} ${plan.asset.symbol}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("stake_amount"))
             Text(
                 text = "≈ $" + plan.usd.setScale(2, RoundingMode.HALF_UP).toPlainString() + " USD",
                 style = MaterialTheme.typography.bodySmall,

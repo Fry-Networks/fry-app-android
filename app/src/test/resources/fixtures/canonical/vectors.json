@@ -82,6 +82,23 @@
     "signature": "0da0676411b18fd5da66e23f3af99240e102266d9e73710a17596db372e15217"
   },
   {
+    "body": {
+      "miner_key": "K",
+      "address": "ADDR",
+      "txId": "T",
+      "amount": 2.5,
+      "type": "one",
+      "asset_id": "2681521901"
+    },
+    "canonical": "{\"miner_key\":\"K\",\"address\":\"ADDR\",\"txId\":\"T\",\"amount\":2.5,\"type\":\"one\",\"asset_id\":\"2681521901\"}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "06168973cc1ae6f211896416a0d14653b9cb1aba6313cf523902fbf907dfd043"
+  },
+  {
     "body": {},
     "canonical": "{}",
     "method": "POST",

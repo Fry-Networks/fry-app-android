@@ -182,7 +182,7 @@ class StakeRepositoryImplTest {
     }
 
     @Test
-    fun `submit surfaces a waived registration as a success and rejects a fractional amount before any request`() = runTest {
+    fun `submit surfaces a waived registration as a success and rejects sub-micro amounts before any request`() = runTest {
         server.enqueue(Fixtures.body("""{"success":true,"message":"Registration stake waived by active event","waived":true}"""))
         val waived = repo.submit(StakeContext.Registration, payload("40"))
         assertTrue(waived.waived)
@@ -190,9 +190,18 @@ class StakeRepositoryImplTest {
         assertNull(waived.txId)
         server.takeRequest()
 
-        val e = runCatching { repo.submit(StakeContext.Registration, payload("12.5")) }.exceptionOrNull() as DashboardException
+        // finer than the ASA's 6 decimals can never have been transferred
+        val e = runCatching { repo.submit(StakeContext.Registration, payload("1.2345678")) }.exceptionOrNull() as DashboardException
         assertEquals("INVALID_INPUT", e.code)
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `submit sends a BYOD-halved verification amount as the JS number 2point5`() = runTest {
+        server.enqueue(Fixtures.body("""{"success":true,"txId":"RECORDED"}"""))
+        repo.submit(StakeContext.Verification(StakeTier.ONE), payload("2.50"))
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue(body, body.contains("\"amount\":2.5,\"type\":\"one\""))
     }
 
     // --- withdraw ---

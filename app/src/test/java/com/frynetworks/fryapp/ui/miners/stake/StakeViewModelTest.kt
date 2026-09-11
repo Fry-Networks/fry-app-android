@@ -75,7 +75,7 @@ class StakeViewModelTest {
         val vm = vm()
         vm.start(key, StakeContext.Registration, byod = false)
         val s = vm.uiState.value
-        assertEquals(StakeState.Ready(80, FryAsset.TFRY, BigDecimal("40")), s.state)
+        assertEquals(StakeState.Ready(BigDecimal("80"), FryAsset.TFRY, BigDecimal("40")), s.state)
         assertTrue(s.canConfirm)
         assertFalse(s.loading)
         assertEquals(StageStatus.CURRENT, s.stages()[StakeStage.AMOUNT.ordinal].second)
@@ -85,7 +85,7 @@ class StakeViewModelTest {
     fun `BYOD halves the USD amount`() = runTest {
         val vm = vm()
         vm.start(key, StakeContext.Registration, byod = true)
-        assertEquals(StakeState.Ready(40, FryAsset.TFRY, BigDecimal("20.00")), vm.uiState.value.state)
+        assertEquals(StakeState.Ready(BigDecimal("40"), FryAsset.TFRY, BigDecimal("20.00")), vm.uiState.value.state)
     }
 
     @Test
@@ -93,7 +93,7 @@ class StakeViewModelTest {
         algod.markOptedIn(FryAsset.FNODE.id, 1_000_000_000L)
         val vm = vm()
         vm.start(key, StakeContext.Node, byod = false)
-        assertEquals(StakeState.Ready(50, FryAsset.FNODE, BigDecimal("100")), vm.uiState.value.state)
+        assertEquals(StakeState.Ready(BigDecimal("50"), FryAsset.FNODE, BigDecimal("100")), vm.uiState.value.state)
     }
 
     @Test
@@ -135,16 +135,17 @@ class StakeViewModelTest {
     fun `verification context puts the tier in the note and selectTier recomputes`() = runTest {
         val vm = vm()
         vm.start(key, StakeContext.Verification(StakeTier.ONE), byod = false)
-        assertEquals(StakeState.Ready(10, FryAsset.TFRY, BigDecimal("5")), vm.uiState.value.state)
+        // stake_one = 5.0 tokens is the amount itself (Stake.tsx:218-229); 5 x 0.5 USD is only the display value
+        assertEquals(StakeState.Ready(BigDecimal("5"), FryAsset.TFRY, BigDecimal("2.50")), vm.uiState.value.state)
         vm.confirm()
-        val note = bridge.built[0].substringAfter("|10000000|").substringBefore('#')
+        val note = bridge.built[0].substringAfter("|5000000|").substringBefore('#')
         assertTrue(note, note.contains("\"type\":\"one\""))
         assertTrue(note, note.contains("\"action\":\"Verification Staking\""))
         assertTrue(note, note.contains("\"operation\":\"verification_staking\""))
         assertEquals(StakeContext.Verification(StakeTier.ONE), stakes.submitCalls.single().first)
 
         vm.selectTier(StakeTier.TWO)
-        assertEquals(StakeState.Ready(40, FryAsset.TFRY, BigDecimal("20")), vm.uiState.value.state)
+        assertEquals(StakeState.Ready(BigDecimal("20"), FryAsset.TFRY, BigDecimal("10.00")), vm.uiState.value.state)
     }
 
     @Test
@@ -276,7 +277,7 @@ class StakeViewModelTest {
         assertFalse(StakeUiState(state = StakeState.Submitting("T")).canCancel)
         assertFalse(StakeUiState(state = StakeState.Verifying).canCancel)
         assertFalse(StakeUiState(state = StakeState.Recording).canCancel)
-        assertTrue(StakeUiState(state = StakeState.Ready(1, FryAsset.TFRY, BigDecimal.ONE)).canCancel)
+        assertTrue(StakeUiState(state = StakeState.Ready(BigDecimal("1"), FryAsset.TFRY, BigDecimal.ONE)).canCancel)
         assertTrue(StakeUiState(state = null, loading = true).canCancel)
     }
 }
