@@ -102,8 +102,11 @@ fun FryNavHost(navController: NavHostController) {
                     address = address,
                     transport = transport,
                     onDone = { minerKey ->
-                        navController.navigate(FryRoutes.device(minerKey)) {
-                            popUpTo(FryRoutes.HOME)
+                        // "device/" matches no destination; never navigate on a blank key.
+                        if (minerKey.isNotBlank()) {
+                            navController.navigate(FryRoutes.device(minerKey)) {
+                                popUpTo(FryRoutes.HOME)
+                            }
                         }
                     },
                 )

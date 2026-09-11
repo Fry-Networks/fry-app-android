@@ -14,6 +14,7 @@ import com.frynetworks.fryapp.util.AlgorandAddress
 import com.frynetworks.fryapp.wifi.SoftApEvent
 import com.frynetworks.fryapp.wifi.WifiProvisioner
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -44,20 +45,31 @@ class ProvisionViewModel @Inject constructor(
 
     fun submit(address: String, transport: String, ssid: String, pass: String, wallet: String) {
         if (_state.value is ProvisionUiState.InProgress) return
-        if (!AlgorandAddress.isValid(wallet)) {
+        // Never let address validation itself take the process down (it once did: the
+        // SHA-512/256 provider is absent on Android). A validator failure reads as invalid.
+        val walletOk = runCatching { AlgorandAddress.isValid(wallet) }.getOrDefault(false)
+        if (!walletOk) {
             _state.value = ProvisionUiState.Error("Invalid Algorand wallet address")
             return
         }
 
         _state.value = ProvisionUiState.InProgress("Connecting...")
         viewModelScope.launch {
+            // Any throw from a provisioner flow (SecurityException, GATT/network failures,
+            // parse errors) becomes an Error state; an uncaught one here kills the process.
+            try {
             var minerKey = ""
             var chip = ""
             var fwVersion = ""
             var name = ""
 
             suspend fun persistAndSucceed() {
-                if (minerKey.isNotEmpty()) {
+                if (minerKey.isEmpty()) {
+                    // Success with no key would navigate to "device/" and crash the nav host.
+                    _state.value = ProvisionUiState.Error("Device connected but did not report a miner key")
+                    return
+                }
+                run {
                     repository.upsert(
                         Device(
                             minerKey = minerKey,
@@ -137,6 +149,11 @@ class ProvisionViewModel @Inject constructor(
                         is SoftApEvent.Failed -> _state.value = ProvisionUiState.Error(event.reason)
                     }
                 }
+            }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.value = ProvisionUiState.Error(e.message ?: "Provisioning failed")
             }
         }
     }
