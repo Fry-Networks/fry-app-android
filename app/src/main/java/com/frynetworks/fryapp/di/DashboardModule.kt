@@ -8,6 +8,8 @@ import com.frynetworks.fryapp.auth.SessionRepository
 import com.frynetworks.fryapp.auth.SessionStore
 import com.frynetworks.fryapp.auth.SignInUseCase
 import com.frynetworks.fryapp.auth.SignOutUseCase
+import com.frynetworks.fryapp.data.dashboard.repo.MinerRepository
+import com.frynetworks.fryapp.data.dashboard.repo.RewardsRepository
 import com.frynetworks.fryapp.network.dashboard.DashboardConfig
 import com.frynetworks.fryapp.network.dashboard.FingerprintRetryInterceptor
 import com.frynetworks.fryapp.network.dashboard.HeaderPinInterceptor
@@ -116,6 +118,27 @@ object DashboardModule {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
 
+    /** Public algod node: a plain client — no cookie jar, no pinned headers, no signing, no developer bearer token. */
+    @Provides
+    @Singleton
+    @AlgodClient
+    fun provideAlgodClient(): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS) // wait-for-block-after blocks server-side for up to a round
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+    @Provides
+    @Singleton
+    @AlgodClient
+    fun provideAlgodRetrofit(@AlgodClient client: OkHttpClient): Retrofit =
+        Retrofit.Builder()
+            .baseUrl(DashboardConfig.ALGOD_URL.let { if (it.endsWith("/")) it else "$it/" })
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+
     @Provides
     @Singleton
     fun provideSessionRepository(api: NextAuthApi, jar: PersistentCookieJar, store: SessionStore): SessionRepository =
@@ -125,7 +148,14 @@ object DashboardModule {
     fun provideSignInUseCase(bridge: WalletBridge, api: NextAuthApi, binder: FingerprintBinder, session: SessionRepository): SignInUseCase =
         SignInUseCase(bridge, api, binder, session)
 
+    /** Sign-out also drops every cached dashboard row (the local `devices` table is untouched). */
     @Provides
-    fun provideSignOutUseCase(api: NextAuthApi, bridge: WalletBridge, session: SessionRepository): SignOutUseCase =
-        SignOutUseCase(api, bridge, session)
+    fun provideSignOutUseCase(
+        api: NextAuthApi,
+        bridge: WalletBridge,
+        session: SessionRepository,
+        miners: MinerRepository,
+        rewards: RewardsRepository,
+    ): SignOutUseCase =
+        SignOutUseCase(api, bridge, session, clearCaches = { miners.clearCache(); rewards.clearCache() })
 }

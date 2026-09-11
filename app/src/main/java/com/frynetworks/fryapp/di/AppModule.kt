@@ -6,6 +6,11 @@ import com.frynetworks.fryapp.BuildConfig
 import com.frynetworks.fryapp.api.HardwareApi
 import com.frynetworks.fryapp.data.DeviceDao
 import com.frynetworks.fryapp.data.FryDatabase
+import com.frynetworks.fryapp.data.dashboard.db.ALL_MIGRATIONS
+import com.frynetworks.fryapp.data.dashboard.db.AssetTotalsCacheDao
+import com.frynetworks.fryapp.data.dashboard.db.MinerDetailCacheDao
+import com.frynetworks.fryapp.data.dashboard.db.RemoteMinerDao
+import com.frynetworks.fryapp.data.dashboard.db.RewardSummaryCacheDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -20,13 +25,28 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
+    /** Additive migrations only (`data/dashboard/db/Migrations.kt`) — never a destructive fallback. */
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): FryDatabase =
-        Room.databaseBuilder(context, FryDatabase::class.java, "fry.db").build()
+        Room.databaseBuilder(context, FryDatabase::class.java, "fry.db")
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
 
     @Provides
     fun provideDeviceDao(database: FryDatabase): DeviceDao = database.deviceDao()
+
+    @Provides
+    fun provideRemoteMinerDao(database: FryDatabase): RemoteMinerDao = database.remoteMinerDao()
+
+    @Provides
+    fun provideMinerDetailCacheDao(database: FryDatabase): MinerDetailCacheDao = database.minerDetailCacheDao()
+
+    @Provides
+    fun provideRewardSummaryCacheDao(database: FryDatabase): RewardSummaryCacheDao = database.rewardSummaryCacheDao()
+
+    @Provides
+    fun provideAssetTotalsCacheDao(database: FryDatabase): AssetTotalsCacheDao = database.assetTotalsCacheDao()
 
     /**
      * Adds `Authorization: Bearer` only when [BuildConfig.HARDWAREAPI_TOKEN] is non-empty —
