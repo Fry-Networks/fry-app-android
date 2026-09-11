@@ -16,3 +16,8 @@ annotation class AuthClient
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class DashboardClient
+
+/** Plain OkHttp/Retrofit for the public algod node (`DashboardConfig.ALGOD_URL`): no cookies, no tokens, no signing. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class AlgodClient
