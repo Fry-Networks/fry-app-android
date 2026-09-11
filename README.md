@@ -47,6 +47,26 @@ their implementation:
 ./gradlew testDebugUnitTest
 ```
 
+## Miners (dashboard)
+
+The Miners tab manages every miner the signed-in wallet owns on
+[dashboard.frynetworks.com](https://dashboard.frynetworks.com) — not only the boards this app
+provisions. It is native Compose on top of the dashboard's existing JSON API:
+
+- Sign in with Pera or Defly. The app never shows the web dashboard; the wallet handshake and
+  every signature go through an invisible WebView that runs the official `@perawallet/connect`
+  and `@blockshake/defly-connect` SDKs (`app/src/main/assets/bridge/`, built reproducibly by
+  `tools/bridge/build.mjs` and checked by `.github/workflows/bridge-verify.yml`). The NextAuth
+  session cookie lives in an encrypted OkHttp cookie jar, never in the WebView.
+- Miners list (totals, fleet online count, search, filters, sort), miner detail (identity,
+  rewards, stake tiers with lock countdowns, hardware status), rewards history, miner keys with
+  masked IoT credentials, and the activity feed.
+- Claim and stake are native sheets that mirror the dashboard's flows (fee payment, group
+  signature, ASA transfer to the stake wallet, precheck / verify-txn / record) and open the wallet
+  app only to sign.
+
+Test tags for every screen are listed in `docs/TEST_TAGS.md`.
+
 ## CI
 
 `.github/workflows/build.yml` runs the unit tests and assembles the debug APK on every push
