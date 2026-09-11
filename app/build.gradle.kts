@@ -22,6 +22,12 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "HARDWAREAPI_BASE", "\"https://hardwareapi.frynetworks.com\"")
+        // Fry Dashboard (miner management backend) + public algod used by the wallet bridge.
+        buildConfigField("String", "DASHBOARD_BASE", "\"https://dashboard.frynetworks.com\"")
+        buildConfigField("String", "ALGOD_BASE", "\"https://mainnet-api.algonode.cloud\"")
+        // Request-signature key. The dashboard dual-accepts this documented default; a rotated
+        // NEXT_PUBLIC_REQUEST_SIGNATURE_SECRET ships here without a code change.
+        buildConfigField("String", "REQUEST_SIGNATURE_SECRET", "\"fry-rewards-signature-v1-\"")
         buildConfigField(
             "String",
             "OTA_MANIFEST_URL",
@@ -111,12 +117,20 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.gson)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.webkit)
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("io.mockk:mockk:1.14.11")
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.turbine)
 
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test:rules:1.7.0")
+    androidTestImplementation(libs.androidx.ui.test.junit4)
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.android.compiler)
+    debugImplementation(libs.androidx.ui.test.manifest)
 }
