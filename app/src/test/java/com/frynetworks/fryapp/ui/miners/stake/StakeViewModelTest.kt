@@ -110,11 +110,14 @@ class StakeViewModelTest {
         val note = built.substringAfter("|80000000|").substringBefore('#')
         // Byte-exact F9 key order; the timestamp comes from the offset-based ServerClock so it may drift by a few ms.
         assertEquals(
-            "{\"action\":\"stake\",\"miner_key\":\"FEM-ABCDEF\",\"asset_id\":${FryAsset.TFRY.id},\"from\":\"$TEST_ADDRESS\"," +
-                "\"to\":\"${StakeRepository.STAKE_WALLET}\",\"amount\":80000000,\"operation\":\"register\",\"timestamp\":",
+            "{\"action\":\"Registration Staking\",\"miner_key\":\"FEM-ABCDEF\",\"asset_id\":${FryAsset.TFRY.id},\"from\":\"$TEST_ADDRESS\"," +
+                "\"to\":\"${StakeRepository.STAKE_WALLET}\",\"amount\":80,\"operation\":\"registration_staking\",\"timestamp\":",
             note.substringBefore("\"timestamp\":") + "\"timestamp\":",
         )
-        val timestamp = note.substringAfter("\"timestamp\":").substringBefore('}').toLong()
+        // Stake.tsx:511 sends `new Date().toISOString()`; parse it back and compare against the clock.
+        val isoTimestamp = note.substringAfter("\"timestamp\":\"").substringBefore('"')
+        assertTrue(isoTimestamp, Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z").matches(isoTimestamp))
+        val timestamp = java.time.Instant.parse(isoTimestamp).toEpochMilli()
         assertTrue("note timestamp $timestamp should be ~now $now", timestamp - now in 0L..5_000L)
         assertTrue(note.endsWith("}"))
         assertEquals(listOf("SUBMITTEDTX"), algod.waited)
@@ -136,7 +139,8 @@ class StakeViewModelTest {
         vm.confirm()
         val note = bridge.built[0].substringAfter("|10000000|").substringBefore('#')
         assertTrue(note, note.contains("\"type\":\"one\""))
-        assertTrue(note, note.contains("\"operation\":\"verification\""))
+        assertTrue(note, note.contains("\"action\":\"Verification Staking\""))
+        assertTrue(note, note.contains("\"operation\":\"verification_staking\""))
         assertEquals(StakeContext.Verification(StakeTier.ONE), stakes.submitCalls.single().first)
 
         vm.selectTier(StakeTier.TWO)

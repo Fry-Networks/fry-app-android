@@ -42,6 +42,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 /** Rows of the sheet's stage list (`stake_stage_<n>`, 1-based). */
@@ -351,19 +354,21 @@ class StakeViewModel(
         dispatch(StakeEvent.PrecheckPassed)
 
         val amountMicro = microFor(plan.amount)
-        val note = JsJson.stringify(
-            StakeMath.stakeNote(
-                action = "stake",
-                minerKeyShort = MinerListItem.shortKey(key),
-                assetId = plan.asset.id,
-                type = (context as? StakeContext.Verification)?.tier?.code,
-                from = address,
-                to = StakeRepository.STAKE_WALLET,
-                amount = amountMicro,
-                operation = operationFor(context),
-                timestampMillis = clock.nowMillis(),
-            ),
+        // Stake.tsx:492-512 parity: human action label, whole-token amount and an ISO-8601
+        // timestamp (the ASA transfer itself carries the micro amount). No server route reads it.
+        val notePayload = StakeMath.stakeNote(
+            action = actionFor(context),
+            minerKeyShort = MinerListItem.shortKey(key),
+            assetId = plan.asset.id,
+            type = (context as? StakeContext.Verification)?.tier?.code,
+            from = address,
+            to = StakeRepository.STAKE_WALLET,
+            amount = plan.amount,
+            operation = operationFor(context),
+            timestampMillis = clock.nowMillis(),
         )
+        notePayload["timestamp"] = isoTimestamp(clock.nowMillis())
+        val note = JsJson.stringify(notePayload)
         val txId = try {
             val txn = bridge.buildAssetTransfer(address, StakeRepository.STAKE_WALLET, plan.asset.id, amountMicro, note)
             val signed = signSingle(txn)
@@ -459,12 +464,25 @@ class StakeViewModel(
 
         fun microFor(tokens: Long): Long = tokens * MICRO_PER_TOKEN
 
-        /** Stake-note `operation` per context (Stake.tsx: `register` / `node` / `verification`). */
-        fun operationFor(context: StakeContext): String = when (context) {
-            StakeContext.Registration -> "register"
-            StakeContext.Node -> "node"
-            is StakeContext.Verification -> "verification"
+        /** Stake-note `action` per context (Stake.tsx:493-498). */
+        fun actionFor(context: StakeContext): String = when (context) {
+            StakeContext.Registration -> "Registration Staking"
+            StakeContext.Node -> "Node Staking"
+            is StakeContext.Verification -> "Verification Staking"
         }
+
+        /** Stake-note `operation` per context (Stake.tsx:505-510). */
+        fun operationFor(context: StakeContext): String = when (context) {
+            StakeContext.Registration -> "registration_staking"
+            StakeContext.Node -> "node_staking"
+            is StakeContext.Verification -> "verification_staking"
+        }
+
+        private val ISO_MILLIS: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
+
+        /** Same shape as JavaScript `Date.prototype.toISOString()` (always millisecond precision, `Z`). */
+        fun isoTimestamp(epochMillis: Long): String = ISO_MILLIS.format(Instant.ofEpochMilli(epochMillis))
 
         /** The ASA the product expects for this context (`reward.tokens.*`), else the family's reward asset. */
         fun assetFor(product: Product, context: StakeContext, family: MinerFamily): FryAsset {
