@@ -1,0 +1,21 @@
+{
+  "name": "fry-wallet-bridge",
+  "version": "1.0.0",
+  "description": "Invisible WebView wallet-signing bridge for the Fry Android app (Pera + Defly).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "vectors": "node vectors/gen.mjs"
+  },
+  "dependencies": {
+    "@perawallet/connect": "1.6.1",
+    "@blockshake/defly-connect": "1.2.1",
+    "algosdk": "3.7.0",
+    "buffer": "6.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
