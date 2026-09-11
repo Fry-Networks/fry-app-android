@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "statuses": {
+    "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345": {
+      "linked": true,
+      "valid": true,
+      "mac_match": true,
+      "reason": null
+    },
+    "RDN-BCDEFGHIJKLMNOPQRSTUVWXYZ0123456": {
+      "linked": false,
+      "valid": false,
+      "mac_match": false,
+      "reason": "NOT_LINKED"
+    }
+  }
+}

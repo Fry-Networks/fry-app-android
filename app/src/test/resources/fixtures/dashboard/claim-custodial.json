@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "preview": false,
+  "mode": "custodial",
+  "totals": [
+    { "asset_id": "2681521901", "amount": 4.25 }
+  ],
+  "txId": "CUSTODIALTXID000000000000000000000000000000000000000000",
+  "message": "Reward broadcast."
+}

@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "events": [
+    {
+      "type": "reward_unlocked",
+      "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "nickname": "Backyard FEM",
+      "amount": 4.25,
+      "asset": "tFRY",
+      "at": "2026-09-05T00:05:00.000Z"
+    },
+    {
+      "type": "registered",
+      "miner_key": "RDN-BCDEFGHIJKLMNOPQRSTUVWXYZ0123456",
+      "nickname": null,
+      "at": "2026-06-01T09:30:00.000Z"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "success": true,
+  "data": [
+    {
+      "name": "Fry Edge Miner",
+      "key": "FEM",
+      "display_name": "FEM",
+      "color": "#F2A03D",
+      "reward": {
+        "unverified": 0.5,
+        "verified": 1.0,
+        "stake": {
+          "stake_one": 5.0,
+          "stake_two": 20.0,
+          "register": 40.0,
+          "node": 100.0
+        },
+        "tokens": {
+          "stake": "tFRY",
+          "reward": "tFRY",
+          "register": "tFRY",
+          "node": "fNODE"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "device": {
+    "address": "HXWYLLZDPTM5OXS3DPARMTG52RSBMMCQNKT4L2LZRRXYPNAWJBT6VIW6WU",
+    "reward_wallet": "HXWYLLZDPTM5OXS3DPARMTG52RSBMMCQNKT4L2LZRRXYPNAWJBT6VIW6WU",
+    "nickname": "Backyard FEM",
+    "name": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+    "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+    "is_registered": true,
+    "verified": true,
+    "virtual": false,
+    "activated": true,
+    "byod": "BYOD-LICENSE-0042",
+    "staked": {
+      "type": "two",
+      "amount": 20.5,
+      "time": "2026-06-01T00:00:00.000Z",
+      "txId": "STAKEDTXID000000000000000000000000000000000000000000000",
+      "asset_id": "2681521901",
+      "withdraw_boost": false,
+      "history": [
+        {
+          "amount": 20.5,
+          "txId": "STAKEDTXID000000000000000000000000000000000000000000000",
+          "time": "2026-06-01T00:00:00.000Z",
+          "asset_id": "2681521901",
+          "type": "verification"
+        }
+      ]
+    },
+    "registration": {
+      "amount": 40.0,
+      "time": "2026-05-01T00:00:00.000Z",
+      "txId": "REGISTERTXID00000000000000000000000000000000000000000000",
+      "asset_id": "2681521901"
+    },
+    "node": null,
+    "position": {
+      "lat": 40.7128,
+      "lng": -74.006
+    },
+    "is_active": true,
+    "reward_eligible": true,
+    "reward_block_reason": null,
+    "created_at": "2026-04-15T12:00:00.000Z",
+    "some_future_field_not_yet_modelled": "tolerated"
+  }
+}

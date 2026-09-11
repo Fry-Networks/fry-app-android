@@ -1,0 +1,26 @@
+{
+  "success": true,
+  "devices": [
+    {
+      "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "nickname": "Backyard FEM",
+      "is_registered": true,
+      "credentials": []
+    },
+    {
+      "miner_key": "IHAQM-CDEFGHIJKLMNOPQRSTUVWXYZ01234567",
+      "nickname": "Air Quality Sensor",
+      "is_registered": true,
+      "credentials": [
+        {
+          "portal": "purpleair",
+          "credentials": {
+            "api_key": "REDACTED-TOKEN-VALUE"
+          },
+          "credentials_saved_at": "2026-05-20T08:00:00.000Z"
+        }
+      ]
+    }
+  ],
+  "byodLicenses": ["BYOD-LICENSE-0042"]
+}
