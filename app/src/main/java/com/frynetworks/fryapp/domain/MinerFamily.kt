@@ -12,9 +12,10 @@ enum class MinerCategory {
 /**
  * Miner-key prefix -> family vocabulary for the Fry Dashboard product catalog. Reward-asset
  * bucketing mirrors `pages/api/rewards/get-asset-totals.ts` on the dashboard: NODE_PREFIXES
- * (RDN/SVN/SDN/CN) plus AEM and FEM (and the virtual node prefixes VRDN/VSDN/VSVN) earn fNODE;
- * every other family earns tFRY. [isNode] mirrors that same route's `NODE_PREFIXES` set plus the
- * virtual node prefixes — note FEM and AEM earn fNODE but are *not* nodes.
+ * (RDN/SVN/SDN/CN) plus AEM and FEM earn fNODE; every other family — including the virtual
+ * activation prefixes VRDN/VSDN/VSVN, which are NOT in `NODE_PREFIXES` (get-asset-totals.ts:26,
+ * claim.ts:37) — earns tFRY. [isNode] mirrors that same `NODE_PREFIXES` set exactly; FEM and AEM
+ * earn fNODE but are *not* nodes.
  *
  * This is deliberately a separate, dashboard-scoped enum from [com.frynetworks.fryapp.util.MinerType]
  * (the Home-screen provisioning vocabulary, which only distinguishes FEM/IOTVPN for devices this
@@ -64,9 +65,9 @@ enum class MinerFamily(
 
     IRM("IRM", "IRM", MinerCategory.RADIATION, FryAsset.TFRY, false),
 
-    VRDN("VRDN", "VRDN", MinerCategory.VIRTUAL, FryAsset.FNODE, true),
-    VSDN("VSDN", "VSDN", MinerCategory.VIRTUAL, FryAsset.FNODE, true),
-    VSVN("VSVN", "VSVN", MinerCategory.VIRTUAL, FryAsset.FNODE, true),
+    VRDN("VRDN", "VRDN", MinerCategory.VIRTUAL, FryAsset.TFRY, false),
+    VSDN("VSDN", "VSDN", MinerCategory.VIRTUAL, FryAsset.TFRY, false),
+    VSVN("VSVN", "VSVN", MinerCategory.VIRTUAL, FryAsset.TFRY, false),
 
     AEM("AEM", "AEM", MinerCategory.ENERGY, FryAsset.FNODE, false),
 

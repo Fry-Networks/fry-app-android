@@ -10,12 +10,10 @@ class MinerFamilyTest {
     private val fnodeFamilies = setOf(
         MinerFamily.RDN, MinerFamily.SVN, MinerFamily.SDN, MinerFamily.CN,
         MinerFamily.AEM, MinerFamily.FEM,
-        MinerFamily.VRDN, MinerFamily.VSDN, MinerFamily.VSVN,
     )
 
     private val nodeFamilies = setOf(
         MinerFamily.RDN, MinerFamily.SVN, MinerFamily.SDN, MinerFamily.CN,
-        MinerFamily.VRDN, MinerFamily.VSDN, MinerFamily.VSVN,
     )
 
     @Test
@@ -102,7 +100,7 @@ class MinerFamilyTest {
     }
 
     @Test
-    fun `rewardAsset is fNODE for node, AEM, FEM and virtual-node families`() {
+    fun `rewardAsset is fNODE for node, AEM and FEM families only`() {
         fnodeFamilies.forEach { family ->
             assertEquals("family=$family", FryAsset.FNODE, family.rewardAsset)
         }
@@ -116,9 +114,17 @@ class MinerFamilyTest {
     }
 
     @Test
-    fun `isNode is true only for RDN SVN SDN CN and their virtual counterparts`() {
+    fun `isNode is true only for RDN SVN SDN CN`() {
         nodeFamilies.forEach { family ->
             assertTrue("family=$family should be a node", family.isNode)
+        }
+    }
+
+    @Test
+    fun `virtual activation prefixes VRDN VSDN VSVN earn tFRY and are not nodes (get-asset-totals NODE_PREFIXES)`() {
+        listOf(MinerFamily.VRDN, MinerFamily.VSDN, MinerFamily.VSVN).forEach { family ->
+            assertEquals("family=$family", FryAsset.TFRY, family.rewardAsset)
+            assertTrue("family=$family must not be a node", !family.isNode)
         }
     }
 
