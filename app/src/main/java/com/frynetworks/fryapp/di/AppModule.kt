@@ -36,6 +36,7 @@ object AppModule {
      */
     @Provides
     @Singleton
+    @HardwareApiClient
     fun provideOkHttpClient(): OkHttpClient =
         OkHttpClient.Builder()
             .addInterceptor { chain ->
@@ -51,7 +52,8 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit =
+    @HardwareApiClient
+    fun provideRetrofit(@HardwareApiClient okHttpClient: OkHttpClient): Retrofit =
         Retrofit.Builder()
             .baseUrl("${BuildConfig.HARDWAREAPI_BASE}/")
             .client(okHttpClient)
@@ -60,5 +62,5 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideHardwareApi(retrofit: Retrofit): HardwareApi = retrofit.create(HardwareApi::class.java)
+    fun provideHardwareApi(@HardwareApiClient retrofit: Retrofit): HardwareApi = retrofit.create(HardwareApi::class.java)
 }

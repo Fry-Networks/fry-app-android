@@ -23,6 +23,32 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
+    <!-- Wallet signing bridge: lets the app resolve Pera/Defly and their deep-link schemes on API 30+. -->
+    <queries>
+        <package android:name="com.algorand.android" />
+        <package android:name="io.blockshake.defly.app" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="wc" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="perawallet-wc" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="perawallet" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="defly-wc" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="algorand" />
+        </intent>
+    </queries>
+
     <application
         android:name=".FryApp"
         android:allowBackup="false"
