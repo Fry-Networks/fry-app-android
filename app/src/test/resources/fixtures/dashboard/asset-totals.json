@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "totals": {
+    "fnode": {
+      "pending": 12.5,
+      "claimable": 4.25,
+      "claimed": 100.0,
+      "accruing": 1.75
+    },
+    "tfry": {
+      "pending": 0.0,
+      "claimable": 9.99,
+      "claimed": 50.5,
+      "accruing": 0.5
+    }
+  },
+  "nextUnlockAt": "2026-09-11T00:05:00.000Z",
+  "nextClaimableAt": "2026-10-11T00:05:00.000Z",
+  "pendingWindowLabel": "Sep 05 – Sep 11",
+  "legacyFryClaimedSnapshot": 0.0,
+  "serverTime": 1757548800000
+}

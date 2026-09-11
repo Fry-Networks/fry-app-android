@@ -1,0 +1,23 @@
+{
+  "success": true,
+  "summaries": {
+    "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345": {
+      "pending": 1.25,
+      "claimable": 4.25,
+      "claimed": 100.0,
+      "accruing": 0.5,
+      "nextUnlockAt": "2026-09-11T00:05:00.000Z",
+      "firstRewardAt": "2026-04-20T00:05:00.000Z",
+      "serverTime": 1757548800000
+    },
+    "RDN-BCDEFGHIJKLMNOPQRSTUVWXYZ0123456": {
+      "pending": 0.0,
+      "claimable": 0.0,
+      "claimed": 0.0,
+      "accruing": 0.0,
+      "nextUnlockAt": "2026-09-11T00:05:00.000Z",
+      "firstRewardAt": null,
+      "serverTime": 1757548800000
+    }
+  }
+}

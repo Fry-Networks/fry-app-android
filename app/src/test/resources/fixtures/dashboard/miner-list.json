@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "miner_keys": [
+    {
+      "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "nickname": "Backyard FEM",
+      "productName": "Fry Edge Miner",
+      "status": "active",
+      "is_registered": true,
+      "virtual": false,
+      "activated": true,
+      "verified": true,
+      "staked": true,
+      "legacy_stake_unlocked": false,
+      "byod": false,
+      "node": false
+    },
+    {
+      "miner_key": "RDN-BCDEFGHIJKLMNOPQRSTUVWXYZ0123456",
+      "nickname": null,
+      "productName": "Relay Node",
+      "status": "pending",
+      "is_registered": false,
+      "virtual": true,
+      "activated": false,
+      "verified": false,
+      "staked": false,
+      "legacy_stake_unlocked": false,
+      "byod": true,
+      "node": true
+    }
+  ]
+}

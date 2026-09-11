@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "preview": false,
+  "mode": "user_pays",
+  "groupId": "GROUP-1700000000000-abc123",
+  "unsignedUserLeg": "gqNzaWfEQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAo3R4boA=",
+  "unsignedServerLegs": [
+    "gqNzaWfEQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAo3R4boA="
+  ],
+  "expected": { "totalMicroAlgo": 10000 },
+  "totals": [
+    { "asset_id": "2681521901", "amount": 4.25 }
+  ],
+  "txId": null
+}

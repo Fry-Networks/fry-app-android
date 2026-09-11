@@ -1,0 +1,57 @@
+{
+  "success": true,
+  "items": [
+    {
+      "_id": "670000000000000000000001",
+      "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "no": 12,
+      "status": "claimable",
+      "asset_id": "2681521901",
+      "amount": 4.25,
+      "originalAmount": 4.25,
+      "onHold": false,
+      "txId": null,
+      "createdAt": "2026-08-28T00:05:00.000Z",
+      "claimedAt": null,
+      "isWeekly": true,
+      "progressDays": 30,
+      "etaDate": "2026-09-27T00:05:00.000Z",
+      "weekLabel": "Aug 22 – Aug 28",
+      "fiatValue": 0.85
+    },
+    {
+      "_id": "670000000000000000000002",
+      "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "no": 11,
+      "status": "onHold",
+      "asset_id": "2681521901",
+      "amount": 0.0,
+      "originalAmount": 3.9,
+      "onHold": true,
+      "txId": null,
+      "createdAt": "2026-08-21T00:05:00.000Z",
+      "claimedAt": null,
+      "isWeekly": true,
+      "progressDays": 12,
+      "etaDate": "2026-09-20T00:05:00.000Z",
+      "weekLabel": "Aug 15 – Aug 21",
+      "fiatValue": null
+    },
+    {
+      "_id": "670000000000000000000003",
+      "miner_key": "FEM-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "no": 5,
+      "status": "some-future-status-not-yet-modelled",
+      "asset_id": "2681521901",
+      "amount": 1.0,
+      "onHold": false,
+      "isWeekly": false,
+      "createdAt": "2026-08-01T00:05:00.000Z"
+    }
+  ],
+  "totalPages": 1,
+  "weeklyCount": 2,
+  "dailyCount": 1,
+  "totalCount": 3,
+  "serverTime": 1757548800000
+}
