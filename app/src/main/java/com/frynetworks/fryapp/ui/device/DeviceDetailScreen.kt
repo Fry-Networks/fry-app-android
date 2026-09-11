@@ -22,8 +22,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.frynetworks.fryapp.auth.SessionState
 import com.frynetworks.fryapp.ble.ProvState
 import com.frynetworks.fryapp.data.UpdateCheckResult
+import com.frynetworks.fryapp.ui.common.SessionViewModel
 import com.frynetworks.fryapp.ui.home.ClaimLink
 
 private const val MILLIS_PER_SECOND = 1000L
@@ -33,10 +35,13 @@ private const val HOURS_PER_DAY = 24
 
 @Composable
 fun DeviceDetailScreen(
+    onOpenMiners: (String) -> Unit = {},
     viewModel: DeviceDetailViewModel = hiltViewModel(),
+    sessionViewModel: SessionViewModel = hiltViewModel(),
 ) {
     val device by viewModel.device.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+    val session by sessionViewModel.state.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
 
     Scaffold(topBar = { TopAppBar(title = { Text(device?.name ?: "Device") }) }) { padding ->
@@ -82,6 +87,16 @@ fun DeviceDetailScreen(
                         .semantics { contentDescription = "Open rewards dashboard" },
                 ) {
                     Text("View rewards on dashboard")
+                }
+                if (session is SessionState.SignedIn) {
+                    TextButton(
+                        onClick = { onOpenMiners(currentDevice.minerKey) },
+                        modifier = Modifier
+                            .testTag("device_open_miners")
+                            .semantics { contentDescription = "Open in Miners" },
+                    ) {
+                        Text("Open in Miners")
+                    }
                 }
             }
         }

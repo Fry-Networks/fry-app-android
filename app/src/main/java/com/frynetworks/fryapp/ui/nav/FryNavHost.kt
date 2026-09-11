@@ -30,6 +30,10 @@ import com.frynetworks.fryapp.data.Transport
 import com.frynetworks.fryapp.ui.device.DeviceDetailScreen
 import com.frynetworks.fryapp.ui.home.HomeScreen
 import com.frynetworks.fryapp.ui.miners.MinersScreen
+import com.frynetworks.fryapp.ui.miners.activity.ActivityScreen
+import com.frynetworks.fryapp.ui.miners.detail.MinerDetailScreen
+import com.frynetworks.fryapp.ui.miners.keys.MinerKeysScreen
+import com.frynetworks.fryapp.ui.miners.rewards.RewardsHistoryScreen
 import com.frynetworks.fryapp.ui.provision.ProvisionScreen
 import com.frynetworks.fryapp.ui.scan.ScanScreen
 import com.frynetworks.fryapp.ui.settings.SettingsScreen
@@ -41,12 +45,18 @@ object FryRoutes {
     const val DEVICE = "device/{minerKey}"
     const val SETTINGS = "settings"
     const val MINERS = "miners"
+    const val MINER = "miner/{minerKey}"
+    const val MINER_REWARDS = "miner/{minerKey}/rewards"
+    const val KEYS = "keys"
+    const val ACTIVITY = "activity"
 
     /** Top-level destinations that show the bottom navigation bar. */
     val BOTTOM_NAV_ROUTES = setOf(HOME, SCAN, MINERS, SETTINGS)
 
     fun provision(address: String, transport: String) = "provision/$address?transport=$transport"
     fun device(minerKey: String) = "device/$minerKey"
+    fun miner(minerKey: String) = "miner/$minerKey"
+    fun minerRewards(minerKey: String) = "miner/$minerKey/rewards"
 }
 
 @Composable
@@ -118,10 +128,38 @@ fun FryNavHost(navController: NavHostController) {
                 route = FryRoutes.DEVICE,
                 arguments = listOf(navArgument("minerKey") { type = NavType.StringType }),
             ) {
-                DeviceDetailScreen()
+                DeviceDetailScreen(
+                    onOpenMiners = { minerKey -> navController.navigate(FryRoutes.miner(minerKey)) },
+                )
             }
             composable(FryRoutes.MINERS) {
-                MinersScreen()
+                MinersScreen(
+                    onOpenMiner = { minerKey -> navController.navigate(FryRoutes.miner(minerKey)) },
+                    onOpenKeys = { navController.navigate(FryRoutes.KEYS) },
+                    onOpenActivity = { navController.navigate(FryRoutes.ACTIVITY) },
+                    onAddDevice = { navController.navigate(FryRoutes.SCAN) },
+                )
+            }
+            composable(
+                route = FryRoutes.MINER,
+                arguments = listOf(navArgument("minerKey") { type = NavType.StringType }),
+            ) {
+                MinerDetailScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenRewards = { minerKey -> navController.navigate(FryRoutes.minerRewards(minerKey)) },
+                )
+            }
+            composable(
+                route = FryRoutes.MINER_REWARDS,
+                arguments = listOf(navArgument("minerKey") { type = NavType.StringType }),
+            ) {
+                RewardsHistoryScreen(onBack = { navController.popBackStack() })
+            }
+            composable(FryRoutes.KEYS) {
+                MinerKeysScreen(onBack = { navController.popBackStack() })
+            }
+            composable(FryRoutes.ACTIVITY) {
+                ActivityScreen(onBack = { navController.popBackStack() })
             }
             composable(FryRoutes.SETTINGS) {
                 SettingsScreen()
