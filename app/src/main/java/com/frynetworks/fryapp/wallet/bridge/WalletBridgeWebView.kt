@@ -6,8 +6,11 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -72,7 +75,7 @@ class WalletBridgeWebView @Inject constructor(
             return existing
         }
         val assetLoader = WebViewAssetLoader.Builder()
-            .addPathHandler("/bridge/", WebViewAssetLoader.AssetsPathHandler(context))
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
             .build()
         val wv = WebView(context)
         wv.settings.apply {
@@ -106,6 +109,20 @@ class WalletBridgeWebView @Inject constructor(
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 Log.w(TAG, "bridge renderer gone (crashed=${detail.didCrash()}); resetting")
                 resetAfterCrash(view)
+                return true
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                Log.i(TAG, "bridge page finished: $url")
+            }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                Log.w(TAG, "bridge resource error ${error.errorCode} ${error.description} for ${request.url}")
+            }
+        }
+        wv.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                Log.i(TAG, "console[${consoleMessage.messageLevel()}] ${consoleMessage.message()} (${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})")
                 return true
             }
         }
@@ -250,7 +267,8 @@ class WalletBridgeWebView @Inject constructor(
     companion object {
         private const val TAG = "FryBridge"
         const val BRIDGE_HOST = "appassets.androidplatform.net"
-        const val BRIDGE_URL = "https://$BRIDGE_HOST/bridge/bridge.html"
+        /** `/assets/` maps to the APK assets root, so this serves `assets/bridge/bridge.html`. */
+        const val BRIDGE_URL = "https://$BRIDGE_HOST/assets/bridge/bridge.html"
         private const val READY_TIMEOUT_MS = 20_000L
         private const val CONNECT_TIMEOUT_MS = 120_000L
         private const val SIGN_TIMEOUT_MS = 180_000L
