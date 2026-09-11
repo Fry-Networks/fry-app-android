@@ -1,0 +1,127 @@
+[
+  {
+    "body": {
+      "miner_key": "FEM-ABC"
+    },
+    "canonical": "{\"miner_key\":\"FEM-ABC\"}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "f30bd6b1af973f7b52ecb9f24eaa4da3706782a8a63fc087d813a7cd863c3e06"
+  },
+  {
+    "body": {
+      "miner_key": "FEM-ABC",
+      "no": 3
+    },
+    "canonical": "{\"miner_key\":\"FEM-ABC\",\"no\":3}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "2aa678ccc0441205e663d6f8c9ba2281eda76d53e880885d244ce0e026f41f52"
+  },
+  {
+    "body": {
+      "miner_key": "FEM-ABC",
+      "preview": true
+    },
+    "canonical": "{\"miner_key\":\"FEM-ABC\",\"preview\":true}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "8b7bc1584380159f02ef19f00086c89620ecad94eb261688f84cc8d82230953c"
+  },
+  {
+    "body": {
+      "miner_keys": [
+        "A",
+        "B"
+      ]
+    },
+    "canonical": "{\"miner_keys\":[\"A\",\"B\"]}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "ba2668c9cfe78898baddbeaa1062b76448921f544458ac9ee135b492dcd2d7d2"
+  },
+  {
+    "body": {
+      "groupId": "g1",
+      "signedUserLegB64": "AAAA"
+    },
+    "canonical": "{\"groupId\":\"g1\",\"signedUserLegB64\":\"AAAA\"}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "cfd19811fcb3a180869adda566271d766e821f4ac04e7c5e9d7da5f39a215ba8"
+  },
+  {
+    "body": {
+      "txId": "T",
+      "address": "ADDR",
+      "miner_key": "K",
+      "amount": 12,
+      "asset_id": "2681521901"
+    },
+    "canonical": "{\"txId\":\"T\",\"address\":\"ADDR\",\"miner_key\":\"K\",\"amount\":12,\"asset_id\":\"2681521901\"}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "0da0676411b18fd5da66e23f3af99240e102266d9e73710a17596db372e15217"
+  },
+  {
+    "body": {},
+    "canonical": "{}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "eb57bf7aa76704a0fb64ac700651466712fbc082809c55f984ff2358286ea3a6"
+  },
+  {
+    "body": {
+      "a": {
+        "b": [
+          1,
+          2,
+          {
+            "c": null
+          }
+        ]
+      },
+      "d": false
+    },
+    "canonical": "{\"a\":{\"b\":[1,2,{\"c\":null}]},\"d\":false}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "53827e47fb10b1b8e21fa6e7b0637a0b548a55ea2f10be0e56b7b3c58d1d8436"
+  },
+  {
+    "body": {
+      "list": []
+    },
+    "canonical": "{\"list\":[]}",
+    "method": "POST",
+    "path": "/api/rewards/claim",
+    "timestamp": 1700000000,
+    "userAgent": "FryApp/0.3.0 (Android; wallet-bridge)",
+    "clientToken": "2863b9c1b668184187815b9d78abb8acbdf00bd703456c40b8ec7bdd3bb60bfa",
+    "signature": "b05c7dd15d33ef7eb9a0481e965c7170e312f01f833b680c5255e39d17632996"
+  }
+]

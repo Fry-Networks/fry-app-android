@@ -1,0 +1,41 @@
+name: Bridge verify
+
+on:
+  push:
+    paths:
+      - "tools/bridge/**"
+      - "app/src/main/assets/bridge/**"
+      - ".github/workflows/bridge-verify.yml"
+  pull_request:
+    paths:
+      - "tools/bridge/**"
+      - "app/src/main/assets/bridge/**"
+      - ".github/workflows/bridge-verify.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/bridge/package-lock.json
+
+      - name: Install dependencies
+        working-directory: tools/bridge
+        run: npm ci
+
+      - name: Run unit tests
+        working-directory: tools/bridge
+        run: npm test
+
+      - name: Build bridge bundle
+        working-directory: tools/bridge
+        run: npm run build
+
+      - name: Fail if the committed bundle is stale
+        run: git diff --exit-code -- app/src/main/assets/bridge/
