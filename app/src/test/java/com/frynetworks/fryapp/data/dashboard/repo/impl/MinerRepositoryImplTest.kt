@@ -281,6 +281,22 @@ class MinerRepositoryImplTest {
     }
 
     @Test
+    fun `myKeys maps the real nested iotCredentials object into the modelled credentials list`() = runTest {
+        responses["/api/my-keys"] = {
+            Fixtures.body(
+                """{"success":true,"devices":[{"miner_key":"IHAQM-CDEF","nickname":"Air","is_registered":true,"iotCredentials":{"air":{"miner_type":"IHAQM","api_type":"purpleair","credentials":{"api_key":"REDACTED-TOKEN-VALUE","sensor_index":"12345"},"credentials_saved_at":"2026-05-20T08:00:00.000Z","position":null,"position_saved_at":null}}},{"miner_key":"${Fixtures.FEM}","nickname":"Backyard FEM","is_registered":true}],"byodLicenses":[]}""",
+            )
+        }
+        val keys = repo.myKeys()
+        val air = keys.devices.first { it.minerKey == "IHAQM-CDEF" }
+        assertEquals(1, air.credentials.size)
+        assertEquals("air", air.credentials[0].portal)
+        assertEquals("REDACTED-TOKEN-VALUE", air.credentials[0].credentials["api_key"])
+        assertEquals("2026-05-20T08:00:00.000Z", air.credentials[0].credentialsSavedAt)
+        assertTrue(keys.devices.first { it.minerKey == Fixtures.FEM }.credentials.isEmpty())
+    }
+
+    @Test
     fun `product posts miner_key and unwraps the first data entry, null when the catalog is empty`() = runTest {
         responses["/api/products/get-product"] = { Fixtures.json("product") }
         val product = repo.product(Fixtures.FEM)

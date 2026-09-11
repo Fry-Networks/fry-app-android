@@ -167,7 +167,8 @@ class MinerRepositoryImpl(
 
     override suspend fun myKeys(): MyKeysResponse {
         requireAddress()
-        return calls.call(MyKeysResponse::class.java) { api.myKeys() }
+        val element = calls.execute { api.myKeys() }
+        return MyKeysMapper.attachIotCredentials(calls.parse(element, MyKeysResponse::class.java), element, gson)
     }
 
     override suspend fun product(minerKey: String): Product? {
