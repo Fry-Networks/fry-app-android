@@ -2,6 +2,7 @@ package com.frynetworks.fryapp.ui.nav
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -28,6 +29,7 @@ import androidx.navigation.navArgument
 import com.frynetworks.fryapp.data.Transport
 import com.frynetworks.fryapp.ui.device.DeviceDetailScreen
 import com.frynetworks.fryapp.ui.home.HomeScreen
+import com.frynetworks.fryapp.ui.miners.MinersScreen
 import com.frynetworks.fryapp.ui.provision.ProvisionScreen
 import com.frynetworks.fryapp.ui.scan.ScanScreen
 import com.frynetworks.fryapp.ui.settings.SettingsScreen
@@ -38,9 +40,10 @@ object FryRoutes {
     const val PROVISION = "provision/{address}?transport={transport}"
     const val DEVICE = "device/{minerKey}"
     const val SETTINGS = "settings"
+    const val MINERS = "miners"
 
     /** Top-level destinations that show the bottom navigation bar. */
-    val BOTTOM_NAV_ROUTES = setOf(HOME, SCAN, SETTINGS)
+    val BOTTOM_NAV_ROUTES = setOf(HOME, SCAN, MINERS, SETTINGS)
 
     fun provision(address: String, transport: String) = "provision/$address?transport=$transport"
     fun device(minerKey: String) = "device/$minerKey"
@@ -117,6 +120,9 @@ fun FryNavHost(navController: NavHostController) {
             ) {
                 DeviceDetailScreen()
             }
+            composable(FryRoutes.MINERS) {
+                MinersScreen()
+            }
             composable(FryRoutes.SETTINGS) {
                 SettingsScreen()
             }
@@ -154,6 +160,13 @@ private fun FryBottomNavigationBar(
             icon = { Icon(Icons.Filled.Search, contentDescription = null) },
             label = { Text("Scan") },
             modifier = Modifier.testTag("nav_scan"),
+        )
+        NavigationBarItem(
+            selected = currentRoute == FryRoutes.MINERS,
+            onClick = { onNavigate(FryRoutes.MINERS) },
+            icon = { Icon(Icons.Filled.Dashboard, contentDescription = null) },
+            label = { Text("Miners") },
+            modifier = Modifier.testTag("nav_miners"),
         )
         NavigationBarItem(
             selected = currentRoute == FryRoutes.SETTINGS,
