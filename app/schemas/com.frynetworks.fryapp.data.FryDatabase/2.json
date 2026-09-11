@@ -1,0 +1,250 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "ec8c7a22bccec5327bcaeb379f984261",
+    "entities": [
+      {
+        "tableName": "devices",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`minerKey` TEXT NOT NULL, `name` TEXT NOT NULL, `chip` TEXT NOT NULL, `fwVersion` TEXT NOT NULL, `wallet` TEXT NOT NULL, `transport` TEXT NOT NULL, `lastSeen` INTEGER NOT NULL, `status` INTEGER NOT NULL, PRIMARY KEY(`minerKey`))",
+        "fields": [
+          {
+            "fieldPath": "minerKey",
+            "columnName": "minerKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chip",
+            "columnName": "chip",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fwVersion",
+            "columnName": "fwVersion",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wallet",
+            "columnName": "wallet",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transport",
+            "columnName": "transport",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeen",
+            "columnName": "lastSeen",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "minerKey"
+          ]
+        }
+      },
+      {
+        "tableName": "remote_miners",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`minerKey` TEXT NOT NULL, `nickname` TEXT, `productName` TEXT, `status` TEXT, `isRegistered` INTEGER NOT NULL, `virtual` INTEGER NOT NULL, `activated` INTEGER NOT NULL, `verified` INTEGER NOT NULL, `staked` INTEGER NOT NULL, `legacyStakeUnlocked` INTEGER NOT NULL, `byod` INTEGER NOT NULL, `node` INTEGER NOT NULL, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`minerKey`))",
+        "fields": [
+          {
+            "fieldPath": "minerKey",
+            "columnName": "minerKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nickname",
+            "columnName": "nickname",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "productName",
+            "columnName": "productName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isRegistered",
+            "columnName": "isRegistered",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "virtual",
+            "columnName": "virtual",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activated",
+            "columnName": "activated",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "verified",
+            "columnName": "verified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staked",
+            "columnName": "staked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "legacyStakeUnlocked",
+            "columnName": "legacyStakeUnlocked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "byod",
+            "columnName": "byod",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "node",
+            "columnName": "node",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fetchedAt",
+            "columnName": "fetchedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "minerKey"
+          ]
+        }
+      },
+      {
+        "tableName": "miner_detail_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`minerKey` TEXT NOT NULL, `json` TEXT NOT NULL, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`minerKey`))",
+        "fields": [
+          {
+            "fieldPath": "minerKey",
+            "columnName": "minerKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "json",
+            "columnName": "json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fetchedAt",
+            "columnName": "fetchedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "minerKey"
+          ]
+        }
+      },
+      {
+        "tableName": "reward_summary_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`minerKey` TEXT NOT NULL, `json` TEXT NOT NULL, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`minerKey`))",
+        "fields": [
+          {
+            "fieldPath": "minerKey",
+            "columnName": "minerKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "json",
+            "columnName": "json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fetchedAt",
+            "columnName": "fetchedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "minerKey"
+          ]
+        }
+      },
+      {
+        "tableName": "asset_totals_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `json` TEXT NOT NULL, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "json",
+            "columnName": "json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fetchedAt",
+            "columnName": "fetchedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ec8c7a22bccec5327bcaeb379f984261')"
+    ]
+  }
+}

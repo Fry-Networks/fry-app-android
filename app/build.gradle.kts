@@ -77,6 +77,11 @@ android {
         }
     }
 
+    sourceSets {
+        // Exported Room schemas (app/schemas) double as androidTest assets for MigrationTest.
+        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
+    }
+
     testOptions {
         unitTests.isReturnDefaultValues = true
         unitTests.all {
@@ -85,6 +90,10 @@ android {
             }
         }
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -132,6 +141,7 @@ dependencies {
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
     androidTestImplementation(libs.hilt.android.testing)
+    androidTestImplementation(libs.room.testing)
     kspAndroidTest(libs.hilt.android.compiler)
     debugImplementation(libs.androidx.ui.test.manifest)
 }

@@ -1,0 +1,73 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "2dc4d8609e99e0c2cdca30ce7426437b",
+    "entities": [
+      {
+        "tableName": "devices",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`minerKey` TEXT NOT NULL, `name` TEXT NOT NULL, `chip` TEXT NOT NULL, `fwVersion` TEXT NOT NULL, `wallet` TEXT NOT NULL, `transport` TEXT NOT NULL, `lastSeen` INTEGER NOT NULL, `status` INTEGER NOT NULL, PRIMARY KEY(`minerKey`))",
+        "fields": [
+          {
+            "fieldPath": "minerKey",
+            "columnName": "minerKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chip",
+            "columnName": "chip",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fwVersion",
+            "columnName": "fwVersion",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wallet",
+            "columnName": "wallet",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transport",
+            "columnName": "transport",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeen",
+            "columnName": "lastSeen",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "minerKey"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '2dc4d8609e99e0c2cdca30ce7426437b')"
+    ]
+  }
+}
