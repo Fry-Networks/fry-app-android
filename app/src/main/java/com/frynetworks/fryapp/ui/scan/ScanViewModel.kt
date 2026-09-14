@@ -33,17 +33,34 @@ class ScanViewModel @Inject constructor(
     private val _scanning = MutableStateFlow(false)
     val scanning = _scanning.asStateFlow()
 
+    /** Non-null when the last scan attempt failed, already phrased for a user. */
+    private val _error = MutableStateFlow<String?>(null)
+    val error = _error.asStateFlow()
+
+    /** False until a scan has actually run, so the UI can tell "not tried yet" from "found nothing". */
+    private val _hasScanned = MutableStateFlow(false)
+    val hasScanned = _hasScanned.asStateFlow()
+
     private var scanJob: Job? = null
+
+    /** Called when the runtime permission prompt comes back with anything denied. */
+    fun onPermissionsDenied(denied: List<String>) {
+        _error.value = ScanErrorCopy.forMissingPermissions(denied)
+    }
 
     fun startScan() {
         if (_scanning.value) return
         _results.value = emptyList()
+        _error.value = null
         _scanning.value = true
 
         scanJob = viewModelScope.launch {
             val bleJob = launch {
                 bleScanner.scan()
-                    .catch { /* scan failures just end this branch; SoftAP results still flow */ }
+                    // Surfacing this is the whole point: a swallowed failure is indistinguishable
+                    // from "no devices nearby", and sent users hunting for a hardware fault that
+                    // was really Bluetooth being off or Location being denied.
+                    .catch { t -> _error.value = ScanErrorCopy.forThrowable(t) }
                     .collect { found ->
                         addResult(
                             ScanUiDevice(
@@ -56,14 +73,21 @@ class ScanViewModel @Inject constructor(
                     }
             }
             val wifiJob = launch {
+                // SoftAP is the secondary transport (ESP8266 only). A failure here is not worth
+                // overwriting a BLE error with, since BLE is what the great majority of boards use.
                 wifiProvisioner.scanForSoftApSsids()
-                    .catch { /* see above */ }
+                    .catch { t ->
+                        if (_error.value == null && _results.value.isEmpty()) {
+                            _error.value = ScanErrorCopy.forThrowable(t)
+                        }
+                    }
                     .collect { ssid ->
                         addResult(ScanUiDevice(label = ssid, address = ssid, transport = Transport.SOFTAP))
                     }
             }
             joinAll(bleJob, wifiJob)
             _scanning.value = false
+            _hasScanned.value = true
         }
     }
 
