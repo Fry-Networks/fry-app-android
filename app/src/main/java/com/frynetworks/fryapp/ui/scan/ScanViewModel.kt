@@ -41,6 +41,14 @@ class ScanViewModel @Inject constructor(
     private val _hasScanned = MutableStateFlow(false)
     val hasScanned = _hasScanned.asStateFlow()
 
+    /** Null until the screen has read the phone state; then what blocks each transport, if anything. */
+    private val _preflight = MutableStateFlow<DiscoveryPreflightResult?>(null)
+    val preflight = _preflight.asStateFlow()
+
+    /** Permissions refused with "Don't ask again"; only knowable right after a request. */
+    var permanentlyDenied: Set<String> = emptySet()
+        private set
+
     private var scanJob: Job? = null
 
     /** Called when the runtime permission prompt comes back with anything denied. */
@@ -48,14 +56,28 @@ class ScanViewModel @Inject constructor(
         _error.value = ScanErrorCopy.forMissingPermissions(denied)
     }
 
+    fun onPermissionResult(grants: Map<String, Boolean>, blocked: Set<String>) {
+        permanentlyDenied = (permanentlyDenied - grants.filterValues { it }.keys) + blocked
+    }
+
+    /** Re-judged on every resume, so returning from Settings clears or updates the guidance. */
+    fun onDiscoveryInputs(inputs: DiscoveryInputs) {
+        _preflight.value = DiscoveryPreflight.evaluate(inputs)
+    }
+
     fun startScan() {
         if (_scanning.value) return
+        val preflight = _preflight.value
+        if (preflight != null && !preflight.canScan) {
+            _error.value = preflight.issues.firstOrNull()?.message
+            return
+        }
         _results.value = emptyList()
         _error.value = null
         _scanning.value = true
 
         scanJob = viewModelScope.launch {
-            val bleJob = launch {
+            val bleJob = if (preflight?.ble?.ready == false) null else launch {
                 bleScanner.scan()
                     // Surfacing this is the whole point: a swallowed failure is indistinguishable
                     // from "no devices nearby", and sent users hunting for a hardware fault that
@@ -72,7 +94,7 @@ class ScanViewModel @Inject constructor(
                         )
                     }
             }
-            val wifiJob = launch {
+            val wifiJob = if (preflight?.softAp?.ready == false) null else launch {
                 // SoftAP is the secondary transport (ESP8266 only). A failure here is not worth
                 // overwriting a BLE error with, since BLE is what the great majority of boards use.
                 wifiProvisioner.scanForSoftApSsids()
@@ -85,7 +107,7 @@ class ScanViewModel @Inject constructor(
                         addResult(ScanUiDevice(label = ssid, address = ssid, transport = Transport.SOFTAP))
                     }
             }
-            joinAll(bleJob, wifiJob)
+            listOfNotNull(bleJob, wifiJob).joinAll()
             _scanning.value = false
             _hasScanned.value = true
         }

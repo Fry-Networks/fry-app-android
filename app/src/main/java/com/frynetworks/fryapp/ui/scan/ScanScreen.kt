@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -29,6 +30,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
@@ -40,13 +43,21 @@ fun ScanScreen(
     val scanning by viewModel.scanning.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val hasScanned by viewModel.hasScanned.collectAsStateWithLifecycle()
+    val preflight by viewModel.preflight.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val requiredPermissions = remember { scanPermissions() }
     var hasPermissions by remember { mutableStateOf(hasAllPermissions(context, requiredPermissions)) }
+    // Coming back from Settings (or a permission prompt) must re-judge, not keep stale guidance.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        hasPermissions = hasAllPermissions(context, requiredPermissions)
+        viewModel.onDiscoveryInputs(readDiscoveryInputs(context, viewModel.permanentlyDenied))
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
+        viewModel.onPermissionResult(grants, permanentlyDeniedAfterRequest(context, grants))
+        viewModel.onDiscoveryInputs(readDiscoveryInputs(context, viewModel.permanentlyDenied))
         hasPermissions = grants.values.all { it }
         if (hasPermissions) {
             viewModel.startScan()
@@ -61,7 +72,8 @@ fun ScanScreen(
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Button(
                 onClick = {
-                    if (hasPermissions) viewModel.startScan() else permissionLauncher.launch(requiredPermissions)
+                    // A partial grant still allows the transport it covers (e.g. BLE without nearby Wi-Fi).
+                    if (hasPermissions || preflight?.canScan == true) viewModel.startScan() else permissionLauncher.launch(requiredPermissions)
                 },
                 modifier = Modifier
                     .padding(16.dp)
@@ -69,6 +81,31 @@ fun ScanScreen(
                     .semantics { contentDescription = "Start scan" },
             ) {
                 Text(if (scanning) "Scanning..." else "Start scan")
+            }
+            preflight?.issues?.forEachIndexed { index, issue ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 8.dp)
+                        .testTag("preflight_issue_${issue.code}")
+                        .semantics { contentDescription = "Setup check: ${issue.message}" },
+                ) {
+                    Text(issue.message, style = MaterialTheme.typography.bodyMedium)
+                    val label = issue.actionLabel
+                    if (label != null) {
+                        OutlinedButton(
+                            onClick = {
+                                when (val action = issue.action) {
+                                    is PreflightAction.RequestPermissions -> permissionLauncher.launch(action.permissions.toTypedArray())
+                                    else -> openPreflightSettings(context, action)
+                                }
+                            },
+                            modifier = Modifier.testTag("preflight_action_${issue.code}"),
+                        ) { Text(label) }
+                    }
+                    if (index < (preflight?.issues?.lastIndex ?: 0)) HorizontalDivider(Modifier.padding(top = 8.dp))
+                }
             }
             error?.let { message ->
                 Text(

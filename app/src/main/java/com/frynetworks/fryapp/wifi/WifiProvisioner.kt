@@ -11,6 +11,8 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
+import androidx.annotation.RequiresApi
 import com.google.gson.Gson
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
@@ -18,6 +20,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
@@ -56,6 +60,7 @@ private const val STATUS_POLL_INTERVAL_MS = 2_000L
 private const val STATUS_POLL_TIMEOUT_MS = 60_000L
 private const val PROV_STATUS_CONNECTED = 3
 private const val PROV_STATUS_ERROR = 4
+private const val SOFTAP_SCAN_WINDOW_MS = 15_000L
 
 /**
  * Provisions an ESP8266 board over its SoftAP per PROTOCOL.md section 3: join the open
@@ -81,24 +86,50 @@ class WifiProvisioner @Inject constructor(
         }
 
         val seen = HashSet<String>()
+        // runCatching: onReceive runs on the main thread, and scanResults throws SecurityException
+        // when Location is revoked mid-scan; that must not take the process down.
+        fun emitSetupNetworks() = runCatching {
+            wifiManager.scanResults
+                .mapNotNull { it.SSID }
+                .filter { SOFTAP_SSID_REGEX.matches(it) && seen.add(it) }
+                .forEach { trySend(it) }
+        }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
-                wifiManager.scanResults
-                    .mapNotNull { it.SSID }
-                    .filter { SOFTAP_SSID_REGEX.matches(it) && seen.add(it) }
-                    .forEach { trySend(it) }
+                emitSetupNetworks()
             }
         }
         context.registerReceiver(receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
 
+        // Android throttles app-triggered scans (4 per 2 minutes), so the last results count too.
+        emitSetupNetworks()
         @Suppress("DEPRECATION")
         wifiManager.startScan()
 
-        awaitClose { runCatching { context.unregisterReceiver(receiver) } }
+        // Bounded like the BLE scan. An open-ended flow kept the Scan screen on "Scanning..."
+        // forever, because the screen waits for both scans to finish (U5).
+        val windowJob = launch {
+            delay(SOFTAP_SCAN_WINDOW_MS)
+            close()
+        }
+
+        awaitClose {
+            windowJob.cancel()
+            runCatching { context.unregisterReceiver(receiver) }
+        }
     }
 
-    @SuppressLint("MissingPermission")
+    /** Joining the setup AP needs [WifiNetworkSpecifier] (API 29); older phones get a clear failure. */
     fun provision(apSsid: String, wifiSsid: String, wifiPass: String, wallet: String): Flow<SoftApEvent> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            joinAndProvision(apSsid, wifiSsid, wifiPass, wallet)
+        } else {
+            flowOf(SoftApEvent.Failed(SOFTAP_NEEDS_ANDROID_10))
+        }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    @SuppressLint("MissingPermission")
+    private fun joinAndProvision(apSsid: String, wifiSsid: String, wifiPass: String, wallet: String): Flow<SoftApEvent> =
         callbackFlow {
             val connectivityManager =
                 context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -227,3 +258,6 @@ class WifiProvisioner @Inject constructor(
             }
         }
 }
+
+const val SOFTAP_NEEDS_ANDROID_10 =
+    "Setting up an ESP8266 over its Wi-Fi setup network needs Android 10 or newer. Use the USB web setup instead."
