@@ -20,6 +20,12 @@ object FryGattContract {
     val CHAR_FW_VERSION: UUID = UUID.fromString("46525907-0001-4000-8000-4652594e4554")
     val CHAR_CHIP_TYPE: UUID = UUID.fromString("46525908-0001-4000-8000-4652594e4554")
 
+    /** PROTOCOL.md 11.3 (v1.1): owner miner key write (encrypted write, exactly 36 bytes). */
+    val CHAR_MINER_KEY_WRITE: UUID = UUID.fromString("46525909-0001-4000-8000-4652594e4554")
+
+    /** PROTOCOL.md 11.3 (v1.1): device status JSON; absent on a protocol-1 board. */
+    val CHAR_DEVICE_STATUS: UUID = UUID.fromString("4652590a-0001-4000-8000-4652594e4554")
+
     /** Client Characteristic Configuration Descriptor — enables notifications. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -55,7 +61,18 @@ enum class ProvError(val code: Int) {
     WIFI_AUTH_FAILED(2),
     NO_IP(3),
     HARDWAREAPI_REGISTRATION_FAILED(4),
-    BAD_WALLET(5);
+    BAD_WALLET(5),
+
+    // PROTOCOL.md v1.1 (append-only). Firmware sends these in status byte 2 with legacy byte 1 = 4,
+    // so an older app still reads "registration failed".
+    KEY_REQUIRED(6),
+    BAD_KEY(7),
+    KEY_LOCKED(8),
+    REG_UNAUTHORIZED(9),
+    REG_FORBIDDEN(10),
+    REG_KEY_IN_USE(11),
+    REG_REJECTED(12),
+    UNREACHABLE(13);
 
     companion object {
         fun fromCode(code: Int): ProvError =

@@ -71,6 +71,7 @@ enum class MinerFamily(
 
     AEM("AEM", "AEM", MinerCategory.ENERGY, FryAsset.FNODE, false),
 
+    /** Legacy dashboard product prefix: ESP boards hold FEM- keys from firmware 0.3.2; IOT- keys are no longer accepted. */
     IOT("IOT", "IOTVPN", MinerCategory.IOTVPN, FryAsset.TFRY, false),
 
     DVN("DVN", "DVN", MinerCategory.EDGE, FryAsset.TFRY, false),

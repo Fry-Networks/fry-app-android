@@ -57,6 +57,18 @@ object ProvisioningReducer {
         runCatching { fromStatusBytes(bytes) }.getOrNull()
 
     /**
+     * [fromStatusBytesOrNull] plus the PROTOCOL.md v1.1 detail byte: an Error status is
+     * `[4][legacy][detail]`, and a detail code of 6 or more replaces the legacy code (which is 4,
+     * "registration failed", for every v1.1 error so older apps keep working).
+     */
+    fun fromStatusBytesDetailedOrNull(bytes: ByteArray): ProvStatus? {
+        val base = fromStatusBytesOrNull(bytes) ?: return null
+        if (base.state != ProvState.ERROR || bytes.size < 3) return base
+        val detail = ProvError.fromCode(bytes[2].toInt() and 0xFF)
+        return if (detail.code >= ProvError.KEY_REQUIRED.code) base.copy(error = detail) else base
+    }
+
+    /**
      * Builds the write plan for provisioning a device: SSID, then password, then wallet
      * (PROTOCOL.md section 1 — writing WALLET commits provisioning, so it must be last).
      * Validates the wallet BEFORE building any step, so an invalid wallet never emits a

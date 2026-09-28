@@ -11,6 +11,9 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.frynetworks.fryapp.provisioning.DeviceCapabilities
+import com.frynetworks.fryapp.provisioning.KeyTransport
+import com.frynetworks.fryapp.provisioning.KeyTransportPolicy
 import com.frynetworks.fryapp.provisioning.ProvStatus
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.frynetworks.fryapp.provisioning.ProvisioningReducer
@@ -40,6 +43,18 @@ sealed class ProvisionEvent {
     data class DeviceInfo(val info: BleDeviceInfo) : ProvisionEvent()
     data class StatusUpdate(val status: ProvStatus) : ProvisionEvent()
     data class Failed(val reason: String) : ProvisionEvent()
+
+    /**
+     * The link dropped after the wallet write (the commit) succeeded: the board is leaving
+     * Bluetooth to join Wi-Fi. Not a failure; only the backend can now confirm it arrived.
+     */
+    data object Handoff : ProvisionEvent()
+
+    /** What the board advertised in `0A` ([DeviceCapabilities.PROTO_1] when it has no `0A`). */
+    data class Capabilities(val caps: DeviceCapabilities) : ProvisionEvent()
+
+    /** Characteristic `05` read after Connected, when an owner key was written; null if unreadable. */
+    data class KeyReadBack(val minerKey: String?) : ProvisionEvent()
 }
 
 /** Result of one raw GATT operation: the status code Android reported, plus a payload. */
@@ -47,10 +62,33 @@ private data class GattOpResult<T>(val status: Int, val value: T?)
 
 private const val GATT_ERROR_133 = 133
 private const val GATT_TIMEOUT = -1
-private const val GATT_CALL_REJECTED = -2
+internal const val GATT_CALL_REJECTED = -2
 private const val OP_TIMEOUT_MS = 5_000L
-private const val OVERALL_TIMEOUT_MS = 60_000L
+// Firmware worst case: Wi-Fi join (≤30 s) + registration with one quick retry; 60 s cut it off.
+private const val OVERALL_TIMEOUT_MS = 120_000L
 private const val LINK_SETTLE_MS = 300L
+// PROTOCOL.md 11.3: the client keeps the link until 5 s after it saw Connected.
+private const val LINK_HOLD_AFTER_CONNECTED_MS = 5_000L
+// A refused `09` write (Error 7/8) is notified right after the write; an SSID write would reset it.
+private const val KEY_VERDICT_SETTLE_MS = 500L
+internal const val BUSY_RETRIES = 3
+internal const val BUSY_BACKOFF_MS = 150L
+
+/**
+ * Android refuses a GATT call outright while the previous one is still in flight ("busy":
+ * `false`, or ERROR_GATT_WRITE_REQUEST_BUSY on API 33+). Retry such refusals [BUSY_RETRIES]
+ * times with growing pauses; any other outcome is returned as is.
+ */
+internal suspend fun <R> retryWhileBusy(statusOf: (R) -> Int, attempt: suspend () -> R): R {
+    var result = attempt()
+    var retry = 0
+    while (statusOf(result) == GATT_CALL_REJECTED && retry < BUSY_RETRIES) {
+        retry++
+        delay(BUSY_BACKOFF_MS * retry)
+        result = attempt()
+    }
+    return result
+}
 
 /**
  * Drives one BLE provisioning session end to end per PROTOCOL.md section 1: connect,
@@ -69,8 +107,15 @@ class BleProvisioner @Inject constructor(
 ) {
     private val opMutex = Mutex()
 
-    @SuppressLint("MissingPermission")
     fun provision(address: String, ssid: String, pass: String, wallet: String): Flow<ProvisionEvent> =
+        provision(address, ssid, pass, wallet, minerKey = null)
+
+    /**
+     * [minerKey] (already C-1 valid) is written to `09` before the Wi-Fi settings when the board
+     * advertises `key_write`; a protocol-1 board keeps its own key and nothing is written.
+     */
+    @SuppressLint("MissingPermission")
+    fun provision(address: String, ssid: String, pass: String, wallet: String, minerKey: String?): Flow<ProvisionEvent> =
         callbackFlow {
             val steps = try {
                 ProvisioningReducer.plan(ssid, pass, wallet)
@@ -96,7 +141,7 @@ class BleProvisioner @Inject constructor(
             // table of concurrent GATT clients; a few leaks exhaust it and every later connect
             // fails with status 133 until Bluetooth is power-cycled.
             try {
-                val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) { session.run(steps) }
+                val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) { session.run(steps, minerKey) }
                 if (outcome != true) {
                     trySend(ProvisionEvent.Failed("Provisioning timed out"))
                 }
@@ -116,6 +161,11 @@ class BleProvisioner @Inject constructor(
         private var connectResult = CompletableDeferred<GattOpResult<Unit>>()
         private var servicesResult: CompletableDeferred<GattOpResult<Unit>>? = null
         private var mtuResult: CompletableDeferred<GattOpResult<Unit>>? = null
+        private var reliableWriteResult: CompletableDeferred<GattOpResult<Unit>>? = null
+
+        /** Set once the wallet write (the commit) succeeded; a disconnect after it is a handoff. */
+        @Volatile private var committed = false
+        @Volatile private var lastState: ProvState? = null
 
         /**
          * ATT MTU actually in force. 23 is the BLE default every connection starts at, and it is
@@ -138,7 +188,7 @@ class BleProvisioner @Inject constructor(
                     if (!connectResult.isCompleted) {
                         connectResult.complete(GattOpResult(status, null))
                     } else if (connectCompleted) {
-                        emit(ProvisionEvent.Failed("GATT disconnected: status=$status"))
+                        emit(if (committed) ProvisionEvent.Handoff else ProvisionEvent.Failed("GATT disconnected: status=$status"))
                         if (!terminal.isCompleted) terminal.complete(Unit)
                     }
                 }
@@ -172,6 +222,10 @@ class BleProvisioner @Inject constructor(
                 writeResults.remove(characteristic.uuid)?.complete(GattOpResult(status, Unit))
             }
 
+            override fun onReliableWriteCompleted(g: BluetoothGatt, status: Int) {
+                reliableWriteResult?.let { if (!it.isCompleted) it.complete(GattOpResult(status, Unit)) }
+            }
+
             override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
                 descriptorResults.remove(descriptor.characteristic.uuid)?.complete(GattOpResult(status, Unit))
             }
@@ -189,11 +243,12 @@ class BleProvisioner @Inject constructor(
             private fun handleNotification(uuid: UUID, value: ByteArray) {
                 if (uuid != FryGattContract.CHAR_STATUS || value.isEmpty()) return
                 // Runs inside a binder callback: an exception here would kill the process.
-                val decoded = ProvisioningReducer.fromStatusBytesOrNull(value)
+                val decoded = ProvisioningReducer.fromStatusBytesDetailedOrNull(value)
                 if (decoded == null) {
                     Log.w(TAG, "ignoring unrecognised status payload (${value.size} bytes)")
                     return
                 }
+                lastState = decoded.state
                 emit(ProvisionEvent.StatusUpdate(decoded))
                 if (decoded.state == ProvState.CONNECTED ||
                     decoded.state == ProvState.ERROR
@@ -204,7 +259,7 @@ class BleProvisioner @Inject constructor(
         }
 
         @SuppressLint("MissingPermission")
-        suspend fun run(steps: List<WriteStep>): Boolean {
+        suspend fun run(steps: List<WriteStep>, minerKey: String?): Boolean {
             var connectOutcome = connectOnce()
             if (connectOutcome.status == GATT_ERROR_133) {
                 Log.w(TAG, "connectGatt status 133, retrying once")
@@ -251,17 +306,37 @@ class BleProvisioner @Inject constructor(
                 emit(ProvisionEvent.DeviceInfo(BleDeviceInfo(name, chip, fw, minerKey)))
             }
 
+            val caps = readChar(FryGattContract.CHAR_DEVICE_STATUS)?.let { DeviceStatusJson.parse(it) } ?: DeviceCapabilities.PROTO_1
+            emit(ProvisionEvent.Capabilities(caps))
+
             enableStatusNotifications()
 
-            for (step in steps) {
+            val keySteps = if (minerKey != null && KeyTransportPolicy.forBle(caps) == KeyTransport.Send) {
+                listOf(WriteStep(FryGattContract.CHAR_MINER_KEY_WRITE, minerKey.toByteArray(Charsets.US_ASCII)))
+            } else {
+                emptyList()
+            }
+            for (step in keySteps + steps) {
                 val ok = writeChar(step.characteristic, step.value)
                 if (!ok) {
                     emit(ProvisionEvent.Failed("Write failed for characteristic ${step.characteristic}"))
                     return false
                 }
+                if (step.characteristic == FryGattContract.CHAR_MINER_KEY_WRITE) {
+                    delay(KEY_VERDICT_SETTLE_MS)
+                    // The board refused the key (Error 7/8): stop here; writing the SSID would reset that error.
+                    if (terminal.isCompleted) return true
+                }
+                if (step.characteristic == FryGattContract.CHAR_WALLET) committed = true
             }
 
             terminal.await()
+            if (lastState == ProvState.CONNECTED) {
+                if (keySteps.isNotEmpty()) {
+                    emit(ProvisionEvent.KeyReadBack(readChar(FryGattContract.CHAR_MINER_KEY)?.toString(Charsets.UTF_8)))
+                }
+                delay(LINK_HOLD_AFTER_CONNECTED_MS)
+            }
             return true
         }
 
@@ -346,10 +421,10 @@ class BleProvisioner @Inject constructor(
                     }
                     return withTimeoutOrNull(OP_TIMEOUT_MS) { deferred.await() } ?: GattOpResult(GATT_TIMEOUT, null)
                 }
-                var result = attempt()
+                var result = retryWhileBusy({ it.status }) { attempt() }
                 if (result.status == GATT_ERROR_133) {
                     Log.w(TAG, "write status 133, retrying once")
-                    result = attempt()
+                    result = retryWhileBusy({ it.status }) { attempt() }
                 }
                 result.status == BluetoothGatt.GATT_SUCCESS
             }
@@ -399,12 +474,18 @@ class BleProvisioner @Inject constructor(
                 return@withLock false
             }
             // executeReliableWrite completes via onReliableWriteCompleted; a false return means
-            // the stack would not even start it.
+            // the stack would not even start it. Wait for that completion: returning early let
+            // the next write start while the execute was still in flight, and Android refused it.
+            val executed = CompletableDeferred<GattOpResult<Unit>>()
+            reliableWriteResult = executed
             if (!gatt.executeReliableWrite()) {
+                reliableWriteResult = null
                 gatt.abortReliableWrite()
                 return@withLock false
             }
-            true
+            val completion = withTimeoutOrNull(OP_TIMEOUT_MS) { executed.await() } ?: GattOpResult(GATT_TIMEOUT, null)
+            reliableWriteResult = null
+            completion.status == BluetoothGatt.GATT_SUCCESS
         }
 
         @SuppressLint("MissingPermission")

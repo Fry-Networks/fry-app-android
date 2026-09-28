@@ -4,11 +4,11 @@ import com.frynetworks.fryapp.data.Device
 
 /**
  * Miner-type family a device belongs to, derived from its miner-key prefix (PROTOCOL.md
- * section 4). Every miner key this app itself provisions today is `IOT-...` (miner code
- * IOTVPN — the ESP8266/ESP32 dVPN line), but `fry.db` is a shared device store: FEM
- * (Fry Edge Miner) hardware enrolled through another Fry Networks tool persists into the same
- * table with an `FEM-` prefixed key. Anything that is not `FEM-` is treated as IOTVPN so an
- * unrecognised prefix still renders on the dashboard instead of crashing it.
+ * section 4 and 11.1). The ESP8266/ESP32 boards this app provisions (miner code IOTVPN, the dVPN
+ * line) carried `IOT-...` keys up to firmware 0.3.1; from 0.3.2 they hold `FEM-...` keys (legacy
+ * `IOT-` keys are rewritten on boot and no longer accepted), the same prefix as FEM (Fry Edge
+ * Miner) hardware enrolled through other Fry Networks tools into this shared device store. Anything
+ * that is not `FEM-` is treated as IOTVPN so an unrecognised prefix still renders instead of crashing.
  */
 enum class MinerType(val label: String) {
     FEM("FEM"),

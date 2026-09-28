@@ -13,7 +13,12 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import androidx.annotation.RequiresApi
+import com.frynetworks.fryapp.provisioning.DeviceCapabilities
+import com.frynetworks.fryapp.provisioning.KeyTransport
+import com.frynetworks.fryapp.provisioning.KeyTransportPolicy
+import com.frynetworks.fryapp.provisioning.SoftApHandoff
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.awaitClose
@@ -33,10 +38,19 @@ import javax.inject.Singleton
 /** `GET /info` response — PROTOCOL.md section 3. */
 data class SoftApInfo(
     val deviceName: String?,
+    /** Masked (`FEM-AB…`) on a v1.1 board; never a usable key then. */
     val minerKey: String?,
     val fw: String?,
     val chip: String?,
+    /** PROTOCOL.md 11.6: `2` on v1.1 boards, absent before. */
+    val proto: Int? = null,
+    val caps: List<String>? = null,
+    val keySet: Boolean? = null,
 )
+
+/** v1.1 capabilities from `/info`; a board that sends no `proto` speaks protocol 1. */
+fun SoftApInfo.capabilities(): DeviceCapabilities =
+    if (proto == null) DeviceCapabilities.PROTO_1 else DeviceCapabilities(proto, caps.orEmpty().toSet(), keyPresent = keySet, fw = fw)
 
 /** `GET /status` response — PROTOCOL.md section 3, same state machine as BLE section 2. */
 data class SoftApStatus(
@@ -44,6 +58,8 @@ data class SoftApStatus(
     val err: Int,
     val minerKey: String?,
     val ip: String?,
+    /** PROTOCOL.md v1.1: the refined error code (6–13) when `err` is the legacy 4. */
+    val detail: Int? = null,
 )
 
 sealed class SoftApEvent {
@@ -51,6 +67,12 @@ sealed class SoftApEvent {
     data class StatusUpdate(val status: SoftApStatus) : SoftApEvent()
     data object ProvisionAccepted : SoftApEvent()
     data class Failed(val reason: String) : SoftApEvent()
+
+    /** `POST /provision` answered with an error status and (v1.1) an `err` code, e.g. 422 key_required. */
+    data class Refused(val httpCode: Int, val err: String?) : SoftApEvent()
+
+    /** The setup AP went away after the board accepted the settings: it is joining Wi-Fi. */
+    data object Handoff : SoftApEvent()
 }
 
 private val SOFTAP_SSID_REGEX = Regex("^FRY-SETUP-[0-9A-F]{6}$")
@@ -119,22 +141,45 @@ class WifiProvisioner @Inject constructor(
         }
     }
 
-    /** Joining the setup AP needs [WifiNetworkSpecifier] (API 29); older phones get a clear failure. */
     fun provision(apSsid: String, wifiSsid: String, wifiPass: String, wallet: String): Flow<SoftApEvent> =
+        provision(apSsid, wifiSsid, wifiPass, wallet, minerKey = null, setupCode = null)
+
+    /**
+     * Joining the setup AP needs [WifiNetworkSpecifier] (API 29); older phones get a clear failure.
+     * [setupCode] is the WPA2 passphrase of a keyless v1.1 board's AP (shown only over USB); the
+     * owner's [minerKey] is sent only over that protected AP ([KeyTransportPolicy]).
+     */
+    fun provision(
+        apSsid: String,
+        wifiSsid: String,
+        wifiPass: String,
+        wallet: String,
+        minerKey: String?,
+        setupCode: String?,
+    ): Flow<SoftApEvent> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            joinAndProvision(apSsid, wifiSsid, wifiPass, wallet)
+            joinAndProvision(apSsid, wifiSsid, wifiPass, wallet, minerKey, setupCode)
         } else {
             flowOf(SoftApEvent.Failed(SOFTAP_NEEDS_ANDROID_10))
         }
 
     @RequiresApi(Build.VERSION_CODES.Q)
     @SuppressLint("MissingPermission")
-    private fun joinAndProvision(apSsid: String, wifiSsid: String, wifiPass: String, wallet: String): Flow<SoftApEvent> =
+    private fun joinAndProvision(
+        apSsid: String,
+        wifiSsid: String,
+        wifiPass: String,
+        wallet: String,
+        minerKey: String?,
+        setupCode: String?,
+    ): Flow<SoftApEvent> =
         callbackFlow {
             val connectivityManager =
                 context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-            val specifier = WifiNetworkSpecifier.Builder().setSsid(apSsid).build()
+            val specifier = WifiNetworkSpecifier.Builder().setSsid(apSsid)
+                .apply { if (setupCode != null) setWpa2Passphrase(setupCode) }
+                .build()
             val request = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -142,8 +187,13 @@ class WifiProvisioner @Inject constructor(
                 .build()
 
             var settled = false
+            val apLost = java.util.concurrent.atomic.AtomicBoolean(false)
             val networkDeferred = CompletableDeferred<Network?>()
             val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onLost(network: Network) {
+                    apLost.set(true)
+                }
+
                 override fun onAvailable(network: Network) {
                     if (!settled) {
                         settled = true
@@ -208,15 +258,31 @@ class WifiProvisioner @Inject constructor(
             }
             trySend(SoftApEvent.Info(info))
 
+            val caps = info.capabilities()
+            val transport = if (minerKey == null) null else KeyTransportPolicy.forSoftAp(caps, joinedWithSetupCode = setupCode != null)
+            if (transport is KeyTransport.Refuse) {
+                trySend(SoftApEvent.Failed(transport.reason))
+                close()
+                awaitClose { unregisterOnce() }
+                return@callbackFlow
+            }
+
             try {
                 val body = FormBody.Builder()
                     .add("ssid", wifiSsid)
                     .add("pass", wifiPass)
                     .add("wallet", wallet)
+                    .apply { if (transport == KeyTransport.Send && minerKey != null) add("key", minerKey) }
                     .build()
                 val req = Request.Builder().url("http://$SOFTAP_IP/provision").post(body).build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) error("POST /provision failed: HTTP ${resp.code}")
+                val refused = client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) null else SoftApEvent.Refused(resp.code, errCode(resp.body?.string()))
+                }
+                if (refused != null) {
+                    trySend(refused)
+                    close()
+                    awaitClose { unregisterOnce() }
+                    return@callbackFlow
                 }
             } catch (e: Exception) {
                 trySend(SoftApEvent.Failed("POST /provision failed: ${e.message}"))
@@ -226,8 +292,10 @@ class WifiProvisioner @Inject constructor(
             }
             trySend(SoftApEvent.ProvisionAccepted)
 
+            var handedOff = false
             val polledOk = withTimeoutOrNull(STATUS_POLL_TIMEOUT_MS) {
                 var reachedTerminal = false
+                var failures = 0
                 while (!reachedTerminal) {
                     val status = try {
                         val req = Request.Builder().url("http://$SOFTAP_IP/status").build()
@@ -236,6 +304,12 @@ class WifiProvisioner @Inject constructor(
                         }
                     } catch (e: Exception) {
                         null
+                    }
+                    failures = if (status == null) failures + 1 else 0
+                    if (SoftApHandoff.isHandoff(accepted = true, consecutiveFailures = failures, apLost = apLost.get())) {
+                        handedOff = true
+                        trySend(SoftApEvent.Handoff)
+                        break
                     }
                     if (status != null) {
                         trySend(SoftApEvent.StatusUpdate(status))
@@ -247,7 +321,7 @@ class WifiProvisioner @Inject constructor(
                 }
                 true
             }
-            if (polledOk != true) {
+            if (polledOk != true && !handedOff) {
                 trySend(SoftApEvent.Failed("Status polling timed out"))
             }
 
@@ -258,6 +332,10 @@ class WifiProvisioner @Inject constructor(
             }
         }
 }
+
+/** The v1.1 `err` field of a `/provision` error body, e.g. `{"err":"key_required"}`; null when absent. */
+internal fun errCode(body: String?): String? =
+    runCatching { JsonParser.parseString(body.orEmpty()).asJsonObject["err"]?.takeIf { !it.isJsonNull }?.asString }.getOrNull()
 
 const val SOFTAP_NEEDS_ANDROID_10 =
     "Setting up an ESP8266 over its Wi-Fi setup network needs Android 10 or newer. Use the USB web setup instead."
