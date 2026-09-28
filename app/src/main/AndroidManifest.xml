@@ -21,6 +21,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Self-update (O-2): PackageInstaller sessions; silent updates once this app is the installer of record. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- Wallet signing bridge: lets the app resolve Pera/Defly and their deep-link schemes on API 30+. -->
@@ -67,6 +71,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".update.InstallStatusReceiver"
+            android:exported="false" />
 
     </application>
 

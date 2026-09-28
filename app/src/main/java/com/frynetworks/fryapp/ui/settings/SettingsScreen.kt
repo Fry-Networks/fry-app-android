@@ -39,6 +39,7 @@ import com.frynetworks.fryapp.BuildConfig
 import com.frynetworks.fryapp.auth.SessionState
 import com.frynetworks.fryapp.ui.common.CopyableText
 import com.frynetworks.fryapp.ui.theme.FryCard
+import com.frynetworks.fryapp.ui.update.AppUpdateSection
 
 /** Public links surfaced from Settings. Not a fleet/API credential — plain marketing/docs URLs. */
 private object FryLinks {
@@ -122,6 +123,8 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
+            AppUpdateSection()
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
             Text("About Fry Networks", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = "Fry Networks builds decentralized VPN and edge-compute hardware. This " +

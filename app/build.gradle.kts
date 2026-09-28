@@ -132,6 +132,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.webkit)
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

@@ -19,6 +19,7 @@ import com.frynetworks.fryapp.provisioning.DeviceCapabilities
 import com.frynetworks.fryapp.provisioning.DashboardHandoffWatcher
 import com.frynetworks.fryapp.provisioning.HandoffOutcome
 import com.frynetworks.fryapp.provisioning.HandoffWatcher
+import com.frynetworks.fryapp.update.InstallInhibitor
 import com.frynetworks.fryapp.util.AlgorandAddress
 import com.frynetworks.fryapp.wifi.SoftApEvent
 import com.frynetworks.fryapp.wifi.WifiProvisioner
@@ -49,9 +50,11 @@ private const val PROV_STATUS_ERROR_CODE = 4
 class ProvisionServices(
     val handoff: HandoffWatcher? = null,
     val keyChecker: KeyChecker? = null,
+    /** Held while a session runs so the app never updates itself mid-provisioning. */
+    val inhibitor: InstallInhibitor? = null,
 ) {
-    @Inject constructor(handoff: DashboardHandoffWatcher, keyChecker: DashboardKeyChecker) :
-        this(handoff as HandoffWatcher?, keyChecker as KeyChecker?)
+    @Inject constructor(handoff: DashboardHandoffWatcher, keyChecker: DashboardKeyChecker, inhibitor: InstallInhibitor) :
+        this(handoff as HandoffWatcher?, keyChecker as KeyChecker?, inhibitor as InstallInhibitor?)
 
     companion object {
         val NONE = ProvisionServices()
@@ -83,7 +86,7 @@ class ProvisionViewModel @Inject constructor(
     private val services: ProvisionServices,
 ) : ViewModel() {
 
-    /** The v0.3.1 collaborators only (no handoff check or key check). */
+    /** The v0.3.1 collaborators only (no handoff check, key check or install inhibit). */
     constructor(
         bleProvisioner: BleProvisioner,
         wifiProvisioner: WifiProvisioner,
@@ -101,6 +104,26 @@ class ProvisionViewModel @Inject constructor(
     val keyNotice = _keyNotice.asStateFlow()
 
     private var keyCheckJob: Job? = null
+
+    private var holdsInhibitor = false
+
+    init {
+        services.inhibitor?.let { inhibitor ->
+            viewModelScope.launch {
+                state.collect { current ->
+                    val busy = current is ProvisionUiState.InProgress
+                    if (busy && !holdsInhibitor) inhibitor.acquire()
+                    if (!busy && holdsInhibitor) inhibitor.release()
+                    holdsInhibitor = busy
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        if (holdsInhibitor) services.inhibitor?.release()
+        holdsInhibitor = false
+    }
 
     /** True when this build can check keys against the dashboard (contract C-3). */
     val canCheckKeys: Boolean get() = services.keyChecker != null

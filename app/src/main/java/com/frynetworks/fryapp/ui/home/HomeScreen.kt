@@ -49,6 +49,7 @@ import com.frynetworks.fryapp.data.Device
 import com.frynetworks.fryapp.data.Transport
 import com.frynetworks.fryapp.ui.common.TimeFormat
 import com.frynetworks.fryapp.ui.theme.FryCard
+import com.frynetworks.fryapp.ui.update.AppUpdateBanner
 import com.frynetworks.fryapp.util.MinerType
 import com.frynetworks.fryapp.util.isDeviceOnline
 
@@ -79,14 +80,17 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Fry devices") },
-                actions = {
-                    IconButton(onClick = onSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                },
-            )
+            Column {
+                TopAppBar(
+                    title = { Text("Fry devices") },
+                    actions = {
+                        IconButton(onClick = onSettings) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        }
+                    },
+                )
+                AppUpdateBanner()
+            }
         },
         floatingActionButton = {
             FloatingActionButton(
