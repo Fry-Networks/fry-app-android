@@ -44,6 +44,8 @@ class SignInUseCase(
     private val session: SessionRepository,
     private val nonceGenerator: NonceGenerator = SecureNonceGenerator(),
     private val callbackUrl: String = DashboardConfig.BASE_URL + "/",
+    /** Server-issued login nonce (dashboard D8); null keeps the local [nonceGenerator]. */
+    private val loginNonces: LoginNonceProvider? = null,
 ) {
 
     suspend fun signIn(vendor: WalletVendor, profile: NewUserProfile?): SignInResult {
@@ -55,6 +57,9 @@ class SignInUseCase(
         } catch (e: BridgeException) {
             session.markSignedOut()
             SignInResult.Failure(e.code.name, e.message ?: e.code.name)
+        } catch (e: LoginNonceUnavailableException) {
+            session.markSignedOut()
+            SignInResult.Failure(NONCE_UNAVAILABLE, e.message ?: "Could not get a sign-in nonce")
         } catch (e: IOException) {
             session.markSignedOut()
             SignInResult.Failure("NETWORK", e.message ?: "Network error")
@@ -77,7 +82,7 @@ class SignInUseCase(
         }
 
         session.setStep(SignInStep.BuildingProof)
-        val nonce = nonceGenerator.next()
+        val nonce = loginNonces?.nonceFor(address) ?: nonceGenerator.next()
         val unsigned = bridge.buildPayment(address, address, 0L, NONCE_MESSAGE_PREFIX + nonce)
 
         session.setStep(SignInStep.AwaitingSignature)
@@ -144,6 +149,7 @@ class SignInUseCase(
 
     companion object {
         const val NONCE_MESSAGE_PREFIX = "Sign this message to prove you own the wallet: "
+        const val NONCE_UNAVAILABLE = "NONCE_UNAVAILABLE"
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }

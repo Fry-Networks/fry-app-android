@@ -3,6 +3,8 @@ package com.frynetworks.fryapp.di
 import android.content.Context
 import com.frynetworks.fryapp.auth.EncryptedPrefsSessionStore
 import com.frynetworks.fryapp.auth.FingerprintBinder
+import com.frynetworks.fryapp.auth.LoginNonceApi
+import com.frynetworks.fryapp.auth.LoginNonceProvider
 import com.frynetworks.fryapp.auth.NextAuthApi
 import com.frynetworks.fryapp.auth.SessionRepository
 import com.frynetworks.fryapp.auth.SessionStore
@@ -17,6 +19,7 @@ import com.frynetworks.fryapp.network.dashboard.SecurityHeaderInterceptor
 import com.frynetworks.fryapp.network.dashboard.SecurityHeaderSigner
 import com.frynetworks.fryapp.network.dashboard.ServerClock
 import com.frynetworks.fryapp.network.dashboard.SessionEventBus
+import com.frynetworks.fryapp.network.dashboard.SessionSigningKeys
 import com.frynetworks.fryapp.network.dashboard.cookies.CookieStore
 import com.frynetworks.fryapp.network.dashboard.cookies.EncryptedPrefsCookieStore
 import com.frynetworks.fryapp.network.dashboard.cookies.PersistentCookieJar
@@ -88,6 +91,12 @@ object DashboardModule {
     @Singleton
     fun provideFingerprintBinder(api: NextAuthApi): FingerprintBinder = FingerprintBinder(api)
 
+    /** Per-session signing key + client token, fetched through the NextAuth client (memory only). */
+    @Provides
+    @Singleton
+    fun provideSessionSigningKeys(@AuthClient client: OkHttpClient, @Named("dashboardBaseUrl") baseUrl: String): SessionSigningKeys =
+        SessionSigningKeys(client, baseUrl)
+
     @Provides
     @Singleton
     @DashboardClient
@@ -97,11 +106,12 @@ object DashboardModule {
         clock: ServerClock,
         binder: FingerprintBinder,
         bus: SessionEventBus,
+        sessionKeys: SessionSigningKeys,
     ): OkHttpClient =
         OkHttpClient.Builder()
             .cookieJar(jar)
             .addInterceptor(HeaderPinInterceptor())
-            .addInterceptor(SecurityHeaderInterceptor(signer, clock))
+            .addInterceptor(SecurityHeaderInterceptor(signer, clock, sessionKeys = sessionKeys))
             .addInterceptor(FingerprintRetryInterceptor(rebind = { binder.rebindBlocking() }, onSessionEvent = { bus.emit(it) }))
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
@@ -144,9 +154,10 @@ object DashboardModule {
     fun provideSessionRepository(api: NextAuthApi, jar: PersistentCookieJar, store: SessionStore): SessionRepository =
         SessionRepository(api, jar, store)
 
+    /** [NextAuthApi.create] also serves the login-nonce route, so the dashboard issues the sign-in nonce. */
     @Provides
     fun provideSignInUseCase(bridge: WalletBridge, api: NextAuthApi, binder: FingerprintBinder, session: SessionRepository): SignInUseCase =
-        SignInUseCase(bridge, api, binder, session)
+        SignInUseCase(bridge, api, binder, session, loginNonces = (api as? LoginNonceApi)?.let { LoginNonceProvider(it) })
 
     /** Sign-out also drops every cached dashboard row (the local `devices` table is untouched). */
     @Provides
@@ -156,6 +167,7 @@ object DashboardModule {
         session: SessionRepository,
         miners: MinerRepository,
         rewards: RewardsRepository,
+        sessionKeys: SessionSigningKeys,
     ): SignOutUseCase =
-        SignOutUseCase(api, bridge, session, clearCaches = { miners.clearCache(); rewards.clearCache() })
+        SignOutUseCase(api, bridge, session, clearCaches = { sessionKeys.invalidate(); miners.clearCache(); rewards.clearCache() })
 }

@@ -73,12 +73,16 @@ interface NextAuthApi {
     suspend fun checkUser(@Body body: RequestBody): CheckUserResponse
 
     companion object {
-        fun create(client: OkHttpClient, baseUrl: String): NextAuthApi =
-            Retrofit.Builder()
+        /** The returned instance also serves the login-nonce route ([LoginNonceApi]). */
+        fun create(client: OkHttpClient, baseUrl: String): NextAuthApi {
+            val retrofit = Retrofit.Builder()
                 .baseUrl(if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/")
                 .client(client)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()
-                .create(NextAuthApi::class.java)
+            return RetrofitNextAuthApi(retrofit.create(NextAuthApi::class.java), retrofit.create(LoginNonceApi::class.java))
+        }
     }
 }
+
+private class RetrofitNextAuthApi(auth: NextAuthApi, nonces: LoginNonceApi) : NextAuthApi by auth, LoginNonceApi by nonces

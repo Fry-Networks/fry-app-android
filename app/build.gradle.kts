@@ -47,6 +47,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Installs beside the release app, so a debug build never replaces a user's install.
+            applicationIdSuffix = ".debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
