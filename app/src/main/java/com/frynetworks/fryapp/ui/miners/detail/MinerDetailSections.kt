@@ -69,18 +69,19 @@ fun IdentityCard(state: MinerDetailUiState, modifier: Modifier = Modifier) {
         }
         Spacer(Modifier.height(4.dp))
         LabelValue("Product", state.product?.displayName ?: state.product?.name ?: state.listItem?.remote?.productName ?: state.family.label, "miner_product")
-        LabelValue("Registered", flag(detail?.isRegistered ?: state.listItem?.remote?.isRegistered), "miner_registered")
-        LabelValue("Verified", flag(detail?.verified ?: state.listItem?.remote?.verified), "miner_verified")
-        LabelValue("Active", flag(detail?.isActive), "miner_is_active")
-        LabelValue("Reward eligible", flag(detail?.rewardEligible), "miner_reward_eligible")
-        detail?.rewardBlockReason?.takeIf { it.isNotBlank() }?.let {
+        val rows = MinerStateTerms.rows(detail, state.listItem?.remote?.isRegistered, state.listItem?.remote?.verified)
+        LabelValue("Registration", rows.registered, "miner_registered")
+        LabelValue("Activity", rows.active, "miner_is_active")
+        LabelValue("Rewards", if (detail?.rewardEligible == false) "Not earning" else rows.earning, "miner_reward_eligible")
+        if (detail?.rewardEligible == false) {
             Text(
-                "Rewards blocked: $it",
+                rows.earning,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.testTag("miner_reward_block_reason"),
             )
         }
+        LabelValue("Verification", rows.verification, "miner_verified")
         if (state.isVirtual) LabelValue("Type", "Virtual miner", "miner_virtual")
         if (state.isByod) LabelValue("BYOD", "Yes", "miner_byod")
         detail?.rewardWallet?.takeIf { it.isNotBlank() }?.let { LabelValue("Reward wallet", shortAddress(it), "miner_reward_wallet") }

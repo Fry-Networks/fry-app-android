@@ -23,6 +23,7 @@ import com.frynetworks.fryapp.data.dashboard.repo.MinerListItem
 import com.frynetworks.fryapp.data.dashboard.repo.MinerSource
 import com.frynetworks.fryapp.ui.common.FamilyChip
 import com.frynetworks.fryapp.ui.common.MinerStatusChip
+import com.frynetworks.fryapp.ui.common.TimeFormat
 import com.frynetworks.fryapp.ui.theme.FryCard
 
 /** One row of the Miners tab: name, short key, status chip, family chip, claimable amount. */
@@ -60,11 +61,9 @@ fun MinersListRow(item: MinerListItem, onClick: () -> Unit, modifier: Modifier =
                     if (item.source != MinerSource.REMOTE) {
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = when (item.localOnline) {
-                                true -> "Paired · online"
-                                false -> "Paired · offline"
-                                null -> "Paired"
-                            },
+                            // Phone-local contact only; the dashboard status chip says whether it runs.
+                            text = item.local?.let { "Paired on this phone · last seen " + TimeFormat.relative(it.lastSeen, System.currentTimeMillis()) }
+                                ?: "Paired on this phone",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

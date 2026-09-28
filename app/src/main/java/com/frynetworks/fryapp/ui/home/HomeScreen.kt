@@ -47,6 +47,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.frynetworks.fryapp.data.Device
 import com.frynetworks.fryapp.data.Transport
+import com.frynetworks.fryapp.ui.common.TimeFormat
 import com.frynetworks.fryapp.ui.theme.FryCard
 import com.frynetworks.fryapp.util.MinerType
 import com.frynetworks.fryapp.util.isDeviceOnline
@@ -223,10 +224,12 @@ private fun DeviceCard(
 
 @Composable
 private fun OnlineStatusChip(device: Device) {
+    // Phone-local only: when THIS phone last reached the board, not whether it runs (the dashboard
+    // decides that). "Online" here contradicted the dashboard (U2).
     val online = isDeviceOnline(device)
     AssistChip(
         onClick = {},
-        label = { Text(if (online) "Online" else "Offline") },
+        label = { Text("Paired · seen " + TimeFormat.relative(device.lastSeen, System.currentTimeMillis())) },
         colors = AssistChipDefaults.assistChipColors(
             labelColor = if (online) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
         ),

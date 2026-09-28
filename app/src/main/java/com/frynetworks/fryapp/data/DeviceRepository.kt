@@ -1,6 +1,7 @@
 package com.frynetworks.fryapp.data
 
 import com.frynetworks.fryapp.api.OtaManifestClient
+import com.frynetworks.fryapp.util.SemVer
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -35,7 +36,11 @@ class DeviceRepository @Inject constructor(
         val manifest = otaManifestClient.fetchManifest() ?: return UpdateCheckResult.Unknown
         val buildEnv = chipToBuildEnv(device.chip) ?: return UpdateCheckResult.Unknown
         val build = manifest.builds[buildEnv] ?: return UpdateCheckResult.Unknown
-        return if (manifest.firmwareVersion != device.fwVersion) {
+        // SemVer precedence, never a string compare: a board on 0.3.3 must not be told that the
+        // published 0.3.1 is an "update" (U15).
+        val latest = SemVer.parse(manifest.firmwareVersion) ?: return UpdateCheckResult.Unknown
+        val current = SemVer.parse(device.fwVersion) ?: return UpdateCheckResult.Unknown
+        return if (latest > current) {
             UpdateCheckResult.Available(manifest.firmwareVersion, build.url)
         } else {
             UpdateCheckResult.UpToDate

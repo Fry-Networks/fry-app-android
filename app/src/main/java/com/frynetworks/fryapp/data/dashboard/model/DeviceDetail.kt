@@ -39,6 +39,12 @@ data class DeviceDetail(
     val isActive: Boolean? = null,
     val rewardEligible: Boolean? = null,
     val rewardBlockReason: String? = null,
+    /** C-4: the dashboard's own words for [rewardBlockReason], e.g. "No heartbeat in the last 24 hours". */
+    val rewardBlockMessage: String? = null,
+    /** C-4: every reward gate with whether it is met. */
+    val rewardBlockGates: List<RewardGate> = emptyList(),
+    /** C-4: `you` / `another_wallet` / null when unknown. */
+    val registeredTo: String? = null,
     val createdAt: String? = null,
     /** The complete source JSON object, for any field this typed subset doesn't model. */
     val raw: JsonObject? = null,
@@ -67,6 +73,13 @@ data class DeviceStakeHistoryEntry(
     @SerializedName("time") val time: String? = null,
     @SerializedName("asset_id") val assetId: String? = null,
     @SerializedName("type") val type: String? = null,
+)
+
+/** One C-4 `reward_block_gates` entry. */
+data class RewardGate(
+    @SerializedName("gate") val gate: String? = null,
+    @SerializedName("met") val met: Boolean? = null,
+    @SerializedName("reason") val reason: String? = null,
 )
 
 data class DevicePosition(
@@ -107,6 +120,11 @@ internal object DeviceDetailDeserializer : JsonDeserializer<DeviceDetail> {
             isActive = booleanOrNull("is_active"),
             rewardEligible = booleanOrNull("reward_eligible"),
             rewardBlockReason = string("reward_block_reason"),
+            rewardBlockMessage = string("reward_block_message"),
+            rewardBlockGates = obj.get("reward_block_gates")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { e -> e.takeIf { it.isJsonObject }?.let { context.deserialize<RewardGate>(it, RewardGate::class.java) } }
+                .orEmpty(),
+            registeredTo = string("registered_to"),
             createdAt = string("created_at"),
             raw = obj,
         )

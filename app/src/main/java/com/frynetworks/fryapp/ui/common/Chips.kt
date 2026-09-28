@@ -12,7 +12,8 @@ import com.frynetworks.fryapp.data.dashboard.repo.MinerStatus
 import com.frynetworks.fryapp.domain.MinerFamily
 
 fun MinerStatus.label(): String = when (this) {
-    MinerStatus.ACTIVE -> "Active"
+    // The list's `status: active` means registered; liveness is the dashboard's is_active (C-4).
+    MinerStatus.ACTIVE -> "Registered"
     MinerStatus.PENDING -> "Pending"
     MinerStatus.UNREGISTERED -> "Unregistered"
     MinerStatus.MIGRATED -> "Migrated"

@@ -1,6 +1,8 @@
 package com.frynetworks.fryapp.ui.miners.detail
 
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -83,7 +85,7 @@ fun MinerDetailScreen(
             onWithdraw = { viewModel.openDialog(DetailDialog.Withdraw(it)) },
             onRename = { viewModel.openDialog(DetailDialog.Rename) },
             onRewardWallet = { viewModel.openDialog(DetailDialog.RewardWallet) },
-            modifier = Modifier.padding(padding).fillMaxSize().semantics { testTagsAsResourceId = true },
+            modifier = Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize().semantics { testTagsAsResourceId = true },
         )
     }
 
@@ -185,7 +187,8 @@ fun MinerDetailContent(
                         Text(error.message, modifier = Modifier.padding(16.dp).testTag("miner_inline_error"))
                     }
                 }
-                item { Spacer(Modifier.height(24.dp)) }
+                // Clear of the navigation bar when an ancestor has not already inset for it.
+                item { Spacer(Modifier.height(24.dp).navigationBarsPadding()) }
             }
         }
     }
