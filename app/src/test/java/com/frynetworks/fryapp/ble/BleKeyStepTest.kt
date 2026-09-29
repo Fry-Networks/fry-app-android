@@ -68,7 +68,7 @@ class BleKeyStepTest {
 
     @Test
     fun `a running board whose writes would be ignored stops before any write and asks for the key`() = runTest {
-        for (d in listOf(6, 9, 10, 11, 12)) {
+        for (d in listOf(6, 7, 8, 9, 10, 11, 12)) {
             val board = board(v11(s = 4, d = d))
             val events = session(board, null)
             assertTrue("detail $d: ${board.writes}", board.writes.isEmpty())

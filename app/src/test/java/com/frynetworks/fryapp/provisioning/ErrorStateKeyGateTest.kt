@@ -30,17 +30,17 @@ class ErrorStateKeyGateTest {
     }
 
     @Test
-    fun `an API-side error with no key to write needs the key first`() {
-        for (d in listOf(4, 6, 9, 10, 11, 12, 13)) {
+    fun `an API-side error or a key refusal after the join, with no key to write, needs the key first`() {
+        for (d in listOf(4, 6, 7, 8, 9, 10, 11, 12, 13)) {
             assertTrue("detail $d", KeyTransportPolicy.keyNeededBeforeWrite(status(4, d), ownerKey = null))
         }
-        assertEquals(setOf(4, 6, 9, 10, 11, 12, 13), KeyTransportPolicy.API_SIDE_ERRORS)
+        assertEquals(setOf(4, 6, 7, 8, 9, 10, 11, 12, 13), KeyTransportPolicy.API_SIDE_ERRORS)
     }
 
     @Test
-    fun `a key about to be written, a Wi-Fi error, a key refusal or a board that is not in Error write as usual`() {
+    fun `a key about to be written, a Wi-Fi error or a board that is not in Error write as usual`() {
         assertFalse("owner key pairs the link", KeyTransportPolicy.keyNeededBeforeWrite(status(4, 11), ownerKey))
-        for (d in listOf(1, 2, 3, 5, 7, 8)) {
+        for (d in listOf(1, 2, 3, 5)) {
             assertFalse("detail $d resets on an SSID write", KeyTransportPolicy.keyNeededBeforeWrite(status(4, d), null))
         }
         for (s in listOf(0, 1, 2, 3)) {

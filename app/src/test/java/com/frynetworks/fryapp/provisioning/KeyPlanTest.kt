@@ -34,7 +34,7 @@ class KeyPlanTest {
 
     @Test
     fun `a running board in an API-side error with no key entered stops with KEY_REQUIRED`() {
-        for (d in listOf(6, 9, 10, 11, 12)) {
+        for (d in listOf(6, 7, 8, 9, 10, 11, 12)) {
             assertEquals("detail $d", KeyPlan.Stop(ProvError.KEY_REQUIRED), KeyTransportPolicy.planKeySteps(null, v11(s = 4, d = d)))
         }
     }

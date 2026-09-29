@@ -60,8 +60,11 @@ object KeyTransportPolicy {
 
     const val OPEN_AP_REFUSAL = "This board's setup network is open, so Fry will not send a miner key over it. It already has a key; to change it, use the USB web setup."
 
-    /** PROTOCOL.md 11.8: the errors a running board keeps while it ignores unencrypted 01/02/03 writes. */
-    val API_SIDE_ERRORS = setOf(4, 6, 9, 10, 11, 12, 13)
+    /**
+     * PROTOCOL.md 11.8: the errors a running board keeps while it ignores unencrypted 01/02/03
+     * writes: the API-side ones (4, 6, 9-13) and a key refusal (7, 8) raised after the join.
+     */
+    val API_SIDE_ERRORS = setOf(4, 6, 7, 8, 9, 10, 11, 12, 13)
     private const val STATE_ERROR = 4
 
     /**
