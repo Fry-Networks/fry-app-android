@@ -17,6 +17,16 @@ class QaTargetTest {
     }
 
     @Test
+    fun `an install prompt is confirmable only when it names this app`() {
+        assertEquals("Fry", QaTarget.APP_LABEL)
+        assertTrue(QaTarget.namesApp("Do you want to update this app? Fry"))
+        assertTrue(QaTarget.namesApp("Fry"))
+        for (other in listOf("Do you want to install RoombaAdvanced?", "Pera Wallet", "", null)) {
+            assertTrue("$other", !QaTarget.namesApp(other))
+        }
+    }
+
+    @Test
     fun `any other package is refused before the suite touches it`() {
         val others = listOf(
             "com.frynetworks.roombaadvanced", "com.android.settings", "com.frynetworks.fryapp.evil",
