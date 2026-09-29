@@ -44,6 +44,7 @@ object Qa {
         "com.samsung.android.packageinstaller",
     )
     private const val SETTINGS = "com.android.settings"
+    private val AUTOFILL_DECLINE: BySelector = By.res("android", "autofill_save_no")
 
     val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     val device: UiDevice get() = UiDevice.getInstance(instrumentation)
@@ -81,7 +82,11 @@ object Qa {
         val intent = self.packageManager.getLaunchIntentForPackage(targetPackage)
             ?: error("$targetPackage is not installed")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        // An autofill service may ask to save the Wi-Fi password the previous run typed; its dialog
+        // keeps the app out of the foreground. Decline it: nothing is saved.
+        device.findObject(AUTOFILL_DECLINE)?.click()
         self.startActivity(intent)
+        device.wait(Until.findObject(AUTOFILL_DECLINE), 2_000)?.click()
         check(device.wait(Until.hasObject(By.pkg(targetPackage).depth(0)), timeoutMs)) { "$targetPackage did not come to the foreground" }
     }
 
