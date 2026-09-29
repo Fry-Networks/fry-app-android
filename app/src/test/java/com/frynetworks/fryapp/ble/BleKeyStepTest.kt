@@ -94,4 +94,38 @@ class BleKeyStepTest {
         assertNull(events.failure())
     }
 
+    @Test
+    fun `the 09 write may take up to 30 s on the simple write path`() = runTest {
+        val board = board().apply { writeDelayMs = mapOf(FryGattContract.CHAR_MINER_KEY_WRITE to 12_000L) }
+        val events = session(board, ownerKey)
+        assertNull(events.failure())
+        assertEquals(ownerKey, board.written(FryGattContract.CHAR_MINER_KEY_WRITE)?.toString(Charsets.US_ASCII))
+        assertTrue("$events", events.any { it is ProvisionEvent.KeyReadBack })
+        assertTrue("took ${currentTime} ms", currentTime >= 12_000L)
+    }
+
+    @Test
+    fun `the 09 write may take up to 30 s on the prepared write path too`() = runTest {
+        val board = board(mtuGranted = false).apply {
+            writeDelayMs = mapOf(FryGattContract.CHAR_MINER_KEY_WRITE to 12_000L)
+            executeDelayMs = mapOf(FryGattContract.CHAR_MINER_KEY_WRITE to 12_000L)
+        }
+        val events = session(board, ownerKey)
+        assertNull(events.failure())
+        assertTrue("${board.preparedWrites}", FryGattContract.CHAR_MINER_KEY_WRITE in board.preparedWrites)
+        assertTrue("$events", events.any { it is ProvisionEvent.KeyReadBack })
+    }
+
+    @Test
+    fun `a 09 write slower than 30 s still fails, and every other write still has 5 s`() = runTest {
+        val slowKey = board().apply { writeDelayMs = mapOf(FryGattContract.CHAR_MINER_KEY_WRITE to 31_000L) }
+        assertEquals("Write failed for characteristic ${FryGattContract.CHAR_MINER_KEY_WRITE}", session(slowKey, ownerKey).failure())
+
+        val slowSsid = board().apply { writeDelayMs = mapOf(FryGattContract.CHAR_WIFI_SSID to 6_000L) }
+        assertEquals("Write failed for characteristic ${FryGattContract.CHAR_WIFI_SSID}", session(slowSsid, ownerKey).failure())
+
+        // The wallet is a prepared write too: its execute keeps the 5 s window.
+        val slowWalletExecute = board(mtuGranted = false).apply { executeDelayMs = mapOf(FryGattContract.CHAR_WALLET to 6_000L) }
+        assertEquals("Write failed for characteristic ${FryGattContract.CHAR_WALLET}", session(slowWalletExecute, ownerKey).failure())
+    }
 }
