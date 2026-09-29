@@ -167,6 +167,11 @@ class ProvisionViewModel @Inject constructor(
                 return
             }
         }
+        // A check still running would let a blocked or active-elsewhere key through unchallenged.
+        if (ownerKey != null && (_keyCheck.value as? KeyCheckUi.Checking)?.minerKey == ownerKey) {
+            _state.value = ProvisionUiState.Error(KEY_STILL_CHECKING)
+            return
+        }
         val checked = (_keyCheck.value as? KeyCheckUi.Done)?.takeIf { it.minerKey == ownerKey }?.result as? KeyCheckResult.Checked
         if (checked != null && checked.blocksSetup) {
             _state.value = ProvisionUiState.Error(checked.message ?: KEY_BLOCKED)
@@ -284,12 +289,14 @@ class ProvisionViewModel @Inject constructor(
                         is ProvisionEvent.Handoff -> handOff()
                         is ProvisionEvent.Capabilities -> caps = event.caps
                         is ProvisionEvent.KeyReadBack -> {
-                            val readBack = event.minerKey
-                            if (readBack == null || readBack == ownerKey) {
-                                minerKey = ownerKey.orEmpty()
-                                persistAndSucceed()
-                            } else {
-                                _state.value = ProvisionUiState.Error(keyMismatch(readBack))
+                            when (val readBack = event.minerKey) {
+                                // An unreadable `05` confirms nothing: never call the key taken.
+                                null -> _state.value = ProvisionUiState.Error(KEY_READ_BACK_FAILED)
+                                ownerKey -> {
+                                    minerKey = ownerKey.orEmpty()
+                                    persistAndSucceed()
+                                }
+                                else -> _state.value = ProvisionUiState.Error(keyMismatch(readBack))
                             }
                         }
                     }
@@ -374,6 +381,8 @@ class ProvisionViewModel @Inject constructor(
         const val KEY_ACK_REQUIRED = "This key is active on another install. Tick the box to confirm what happens to the other install, then try again."
         const val KEY_BLOCKED = "This key cannot be set up for your wallet."
         const val KEY_READ_BACK = "Connected. Checking the key on the board…"
+        const val KEY_READ_BACK_FAILED = "Connected, but the key on the board could not be read back to confirm it. Unplug the board for 5 seconds, plug it back in, and set it up again."
+        const val KEY_STILL_CHECKING = "Still checking this key with the dashboard. Wait a moment, then try again."
         const val DEVICE_KEEPS_NOTICE = "This board runs older firmware that keeps the key it made itself, so the key you entered was not written. Add this board key on the dashboard instead:"
         const val CONNECTED_MASKED_KEY = "The board is connected with the key it already had. Find it on the dashboard by the key shown here."
 
