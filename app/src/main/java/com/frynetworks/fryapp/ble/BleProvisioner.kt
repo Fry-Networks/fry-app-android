@@ -64,9 +64,12 @@ private data class GattOpResult<T>(val status: Int, val value: T?)
 private const val GATT_ERROR_133 = 133
 private const val GATT_TIMEOUT = -1
 internal const val GATT_CALL_REJECTED = -2
-private const val OP_TIMEOUT_MS = 5_000L
+internal const val OP_TIMEOUT_MS = 5_000L
+// The first `09` write starts LESC pairing (ECDH on the board, often a system consent dialog) and
+// Android reports the write only once pairing is done, so that write gets its own window.
+internal const val KEY_WRITE_TIMEOUT_MS = 30_000L
 // Firmware worst case: Wi-Fi join (≤30 s) + registration with one quick retry; 60 s cut it off.
-private const val OVERALL_TIMEOUT_MS = 120_000L
+internal const val OVERALL_TIMEOUT_MS = 120_000L
 private const val LINK_SETTLE_MS = 300L
 // PROTOCOL.md 11.3: the client keeps the link until 5 s after it saw Connected.
 private const val LINK_HOLD_AFTER_CONNECTED_MS = 5_000L
@@ -90,6 +93,10 @@ internal suspend fun <R> retryWhileBusy(statusOf: (R) -> Int, attempt: suspend (
     }
     return result
 }
+
+/** How long one write to [uuid] may take before it counts as failed. */
+internal fun writeTimeoutMs(uuid: UUID): Long =
+    if (uuid == FryGattContract.CHAR_MINER_KEY_WRITE) KEY_WRITE_TIMEOUT_MS else OP_TIMEOUT_MS
 
 /**
  * Drives one BLE provisioning session end to end per PROTOCOL.md section 1: connect,
@@ -420,7 +427,7 @@ class BleProvisioner @Inject constructor(
                         writeResults.remove(uuid)
                         return GattOpResult(GATT_CALL_REJECTED, null)
                     }
-                    return withTimeoutOrNull(OP_TIMEOUT_MS) { deferred.await() } ?: GattOpResult(GATT_TIMEOUT, null)
+                    return withTimeoutOrNull(writeTimeoutMs(uuid)) { deferred.await() } ?: GattOpResult(GATT_TIMEOUT, null)
                 }
                 var result = retryWhileBusy({ it.status }) { attempt() }
                 if (result.status == GATT_ERROR_133) {
@@ -468,7 +475,7 @@ class BleProvisioner @Inject constructor(
                 gatt.abortReliableWrite()
                 return@withLock false
             }
-            val result = withTimeoutOrNull(OP_TIMEOUT_MS) { deferred.await() }
+            val result = withTimeoutOrNull(writeTimeoutMs(uuid)) { deferred.await() }
                 ?: GattOpResult(GATT_TIMEOUT, null)
             if (result.status != BluetoothGatt.GATT_SUCCESS) {
                 gatt.abortReliableWrite()
@@ -484,7 +491,7 @@ class BleProvisioner @Inject constructor(
                 gatt.abortReliableWrite()
                 return@withLock false
             }
-            val completion = withTimeoutOrNull(OP_TIMEOUT_MS) { executed.await() } ?: GattOpResult(GATT_TIMEOUT, null)
+            val completion = withTimeoutOrNull(writeTimeoutMs(uuid)) { executed.await() } ?: GattOpResult(GATT_TIMEOUT, null)
             reliableWriteResult = null
             completion.status == BluetoothGatt.GATT_SUCCESS
         }
