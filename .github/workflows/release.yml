@@ -81,10 +81,12 @@ jobs:
           if [ -n "$PROMOTE" ]; then
             [ "$CHANNEL" = stable ] || { echo "promote_from needs a stable tag"; exit 1; }
             [[ "$PROMOTE" =~ ^app-v[0-9]+\.[0-9]+\.[0-9]+-(rc|test)\.[0-9]+$ ]] || { echo "bad promote_from $PROMOTE"; exit 1; }
+            [ -z "$CODE" ] || [[ "$CODE" =~ ^[0-9]+$ ]] || { echo "bad version_code $CODE"; exit 1; }
           else
             [[ "$CODE" =~ ^[0-9]+$ ]] || { echo "versionCode missing: put 'versionCode: N' in the annotated tag message or pass version_code"; exit 1; }
           fi
           MIN="${INPUT_MIN:-6}"
+          [[ "$MIN" =~ ^[0-9]+$ ]] || { echo "bad min_supported $MIN"; exit 1; }
           {
             echo "tag=$TAG"; echo "channel=$CHANNEL"; echo "name=$NAME"; echo "code=$CODE"
             echo "promote=$PROMOTE"; echo "min=$MIN"; echo "asset=fryapp-$NAME.apk"
@@ -129,6 +131,7 @@ jobs:
           CODE=$("$BT/aapt2" dump badging '${{ steps.v.outputs.asset }}' | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
           NAME=$("$BT/aapt2" dump badging '${{ steps.v.outputs.asset }}' | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
           [ "$NAME" = '${{ steps.v.outputs.name }}' ] || { echo "promoted APK is $NAME, tag says ${{ steps.v.outputs.name }}"; exit 1; }
+          [[ "$CODE" =~ ^[0-9]+$ ]] || { echo "promoted APK has no numeric versionCode ($CODE)"; exit 1; }
           echo "PROMOTED_CODE=$CODE" >> "$GITHUB_ENV"
 
       - name: Verify gate (pinned cert, not debug, not debuggable, package, versionCode)
