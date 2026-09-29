@@ -68,6 +68,25 @@ class ProvisionSubmitGuardsTest {
     }
 
     @Test
+    fun `the still-checking guard is scoped by key, a check for another key does not block submit`() = runTest {
+        val otherKey = "FEM-TESTKEY0000000000000000000000009"
+        every { bleProvisioner.provision(any(), any(), any(), any(), ownerKey) } returns flowOf(
+            ProvisionEvent.DeviceInfo(BleDeviceInfo("FRY-ESP32-ABC123", "ESP32", "0.4.0", "")),
+            ProvisionEvent.Capabilities(v11),
+            ProvisionEvent.StatusUpdate(ProvStatus(ProvState.CONNECTED)),
+            ProvisionEvent.KeyReadBack(ownerKey),
+        )
+        val vm = viewModel(KeyChecker { awaitCancellation() })
+        vm.checkKey(otherKey)
+        assertTrue("${vm.keyCheck.value}", vm.keyCheck.value is KeyCheckUi.Checking)
+
+        vm.submit(ble, Transport.BLE, "lab", "pass", wallet, KeyStep(ownerKey, null))
+
+        assertEquals(ProvisionUiState.Success(ownerKey), vm.state.value)
+        verify(exactly = 1) { bleProvisioner.provision(any(), any(), any(), any(), ownerKey) }
+    }
+
+    @Test
     fun `with no owner key a read-back never overwrites the success a keyed board already earned`() = runTest {
         val boardKey = "FEM-TESTKEY0000000000000000000000002"
         every { bleProvisioner.provision(any(), any(), any(), any()) } returns flowOf(
