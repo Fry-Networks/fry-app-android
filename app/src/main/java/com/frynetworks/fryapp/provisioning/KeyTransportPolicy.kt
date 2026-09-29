@@ -1,5 +1,7 @@
 package com.frynetworks.fryapp.provisioning
 
+import com.frynetworks.fryapp.ble.ProvError
+
 /** What a board says about itself: BLE `0A` or ESP8266 `GET /info` (PROTOCOL.md 11.3, 11.6). */
 data class DeviceCapabilities(
     val proto: Int,
@@ -22,6 +24,18 @@ data class DeviceCapabilities(
         /** No `0A` / no `"proto"`: a protocol-1 board, which keeps the key it minted itself. */
         val PROTO_1 = DeviceCapabilities(proto = 1, caps = emptySet())
     }
+}
+
+/** What the BLE session does about the miner key before the Wi-Fi writes (PROTOCOL.md 11.1, 11.8). */
+sealed interface KeyPlan {
+    /** Write [key] (the owner's, never the board's) to `09`, then the Wi-Fi steps. */
+    data class Write(val key: String) : KeyPlan
+
+    /** Nothing to write: a protocol-1 board keeps its own key, or no key was entered. */
+    data object NoKeyStep : KeyPlan
+
+    /** 11.8: unencrypted writes would be ignored; report [error] and stop before writing anything. */
+    data class Stop(val error: ProvError) : KeyPlan
 }
 
 sealed interface KeyTransport {
@@ -57,6 +71,16 @@ object KeyTransportPolicy {
      */
     fun keyNeededBeforeWrite(caps: DeviceCapabilities, ownerKey: String?): Boolean =
         ownerKey == null && caps.proto >= 2 && caps.state == STATE_ERROR && caps.detail in API_SIDE_ERRORS
+
+    /**
+     * The BLE session's key step, decided before any write. Only [ownerKey] (what the user
+     * entered, C-1 valid) can ever be written; the board's own `05` value is never a candidate.
+     */
+    fun planKeySteps(ownerKey: String?, caps: DeviceCapabilities): KeyPlan = when {
+        keyNeededBeforeWrite(caps, ownerKey) -> KeyPlan.Stop(ProvError.KEY_REQUIRED)
+        ownerKey != null && forBle(caps) == KeyTransport.Send -> KeyPlan.Write(ownerKey)
+        else -> KeyPlan.NoKeyStep
+    }
 
     fun forBle(caps: DeviceCapabilities): KeyTransport =
         if (caps.keyWrite) KeyTransport.Send else KeyTransport.DeviceKeeps

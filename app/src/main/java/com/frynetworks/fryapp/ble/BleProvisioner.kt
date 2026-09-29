@@ -13,7 +13,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.frynetworks.fryapp.provisioning.DeviceCapabilities
-import com.frynetworks.fryapp.provisioning.KeyTransport
+import com.frynetworks.fryapp.provisioning.KeyPlan
 import com.frynetworks.fryapp.provisioning.KeyTransportPolicy
 import com.frynetworks.fryapp.provisioning.ProvStatus
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -266,8 +266,9 @@ class BleProvisioner @Inject constructor(
             }
         }
 
+        /** [ownerKey] is what the user entered (C-1 valid) or null; the board's own key is read below as `boardKey`. */
         @SuppressLint("MissingPermission")
-        suspend fun run(steps: List<WriteStep>, minerKey: String?): Boolean {
+        suspend fun run(steps: List<WriteStep>, ownerKey: String?): Boolean {
             var connectOutcome = connectOnce()
             if (connectOutcome.status == GATT_ERROR_133) {
                 Log.w(TAG, "connectGatt status 133, retrying once")
@@ -309,29 +310,29 @@ class BleProvisioner @Inject constructor(
             val name = readChar(FryGattContract.CHAR_DEVICE_NAME)?.toString(Charsets.UTF_8)
             val chip = readChar(FryGattContract.CHAR_CHIP_TYPE)?.toString(Charsets.UTF_8)
             val fw = readChar(FryGattContract.CHAR_FW_VERSION)?.toString(Charsets.UTF_8)
-            val minerKey = readChar(FryGattContract.CHAR_MINER_KEY)?.toString(Charsets.UTF_8)
-            if (name != null && chip != null && fw != null && minerKey != null) {
-                emit(ProvisionEvent.DeviceInfo(BleDeviceInfo(name, chip, fw, minerKey)))
+            val boardKey = readChar(FryGattContract.CHAR_MINER_KEY)?.toString(Charsets.UTF_8)
+            if (name != null && chip != null && fw != null && boardKey != null) {
+                emit(ProvisionEvent.DeviceInfo(BleDeviceInfo(name, chip, fw, boardKey)))
             }
 
             val caps = readChar(FryGattContract.CHAR_DEVICE_STATUS)?.let { DeviceStatusJson.parse(it) } ?: DeviceCapabilities.PROTO_1
             emit(ProvisionEvent.Capabilities(caps))
 
-            // PROTOCOL.md 11.8: a running board in an API-side error ignores 01/02/03 over an
-            // unencrypted link, and only a `09` write (which pairs) encrypts it. With no key to
-            // write the settings would be dropped silently, so ask for the key instead.
-            if (KeyTransportPolicy.keyNeededBeforeWrite(caps, minerKey)) {
-                emit(ProvisionEvent.StatusUpdate(ProvStatus(ProvState.ERROR, ProvError.KEY_REQUIRED)))
-                return true
+            // PROTOCOL.md 11.1/11.8: only the owner's key is ever written to `09`, never the
+            // board's own; and a running board in an API-side error ignores 01/02/03 over an
+            // unencrypted link (only a `09` write, which pairs, encrypts it), so with no key to
+            // write the session stops here and says why instead of writing into the void.
+            val keySteps = when (val plan = KeyTransportPolicy.planKeySteps(ownerKey, caps)) {
+                is KeyPlan.Stop -> {
+                    emit(ProvisionEvent.StatusUpdate(ProvStatus(ProvState.ERROR, plan.error)))
+                    return true
+                }
+                is KeyPlan.Write -> listOf(WriteStep(FryGattContract.CHAR_MINER_KEY_WRITE, plan.key.toByteArray(Charsets.US_ASCII)))
+                KeyPlan.NoKeyStep -> emptyList()
             }
 
             enableStatusNotifications()
 
-            val keySteps = if (minerKey != null && KeyTransportPolicy.forBle(caps) == KeyTransport.Send) {
-                listOf(WriteStep(FryGattContract.CHAR_MINER_KEY_WRITE, minerKey.toByteArray(Charsets.US_ASCII)))
-            } else {
-                emptyList()
-            }
             for (step in keySteps + steps) {
                 val ok = writeChar(step.characteristic, step.value)
                 if (!ok) {

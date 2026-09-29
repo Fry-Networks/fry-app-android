@@ -289,6 +289,9 @@ class ProvisionViewModel @Inject constructor(
                         is ProvisionEvent.Handoff -> handOff()
                         is ProvisionEvent.Capabilities -> caps = event.caps
                         is ProvisionEvent.KeyReadBack -> {
+                            // Nothing was written (no owner key, or a board that keeps its own):
+                            // the board's key already counted at Connected, so a read-back is not a verdict.
+                            if (!ownerKeyTaken()) return@collect
                             when (val readBack = event.minerKey) {
                                 // An unreadable `05` confirms nothing: never call the key taken.
                                 null -> _state.value = ProvisionUiState.Error(KEY_READ_BACK_FAILED)

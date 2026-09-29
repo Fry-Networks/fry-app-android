@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -64,6 +65,22 @@ class ProvisionSubmitGuardsTest {
         val state = vm.state.value
         assertTrue("$state", state is ProvisionUiState.Error && state.reason.contains("checking", ignoreCase = true))
         verify(exactly = 0) { bleProvisioner.provision(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `with no owner key a read-back never overwrites the success a keyed board already earned`() = runTest {
+        val boardKey = "FEM-TESTKEY0000000000000000000000002"
+        every { bleProvisioner.provision(any(), any(), any(), any()) } returns flowOf(
+            ProvisionEvent.DeviceInfo(BleDeviceInfo("FRY-ESP32-ABC123", "ESP32", "0.4.0", boardKey)),
+            ProvisionEvent.Capabilities(v11),
+            ProvisionEvent.StatusUpdate(ProvStatus(ProvState.CONNECTED)),
+            ProvisionEvent.KeyReadBack(boardKey),
+        )
+        val vm = viewModel(KeyChecker { KeyCheckResult.Unverifiable(null, "Sign in to check who owns this key before you set it up.") })
+
+        vm.submit(ble, Transport.BLE, "lab", "pass", wallet, KeyStep(null, null))
+
+        assertEquals(ProvisionUiState.Success(boardKey), vm.state.value)
     }
 
     @Test
