@@ -89,7 +89,7 @@ chmod +x "$T/bin/gh" "$T/sdk/build-tools/99.0.0/aapt2"
 # promote_run <versionCode> <versionName> -> prints the step's exit code; GITHUB_ENV in $T/env
 promote_run() {
     rm -rf "${T:?}/work"; mkdir -p "$T/work"; : > "$T/env"
-    ( cd "$T/work" && PATH="$T/bin:$PATH" STUB_APK=$T/stub.apk STUB_VC=$1 STUB_VN=$2 ANDROID_HOME=$T/sdk \
+    ( cd "$T/work" && PATH="$T/bin:$PATH" STUB_APK=$T/stub.apk STUB_VC=$1 STUB_VN=$2 ANDROID_HOME=$T/sdk ANDROID_BUILD_TOOLS=$T/sdk/build-tools/99.0.0 \
         GITHUB_REPOSITORY=Fry-Networks/fry-app-android GITHUB_ENV=$T/env bash "$T/step-promote.sh" >/dev/null 2>&1 )
     echo $?
 }

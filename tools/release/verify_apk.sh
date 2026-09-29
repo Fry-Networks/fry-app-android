@@ -32,7 +32,7 @@ grep -q '^Number of signers: 1$' <<<"$certs" || fail "expected exactly one signe
 # Newer apksigner prints v3 signers as "Signer (minSdkVersion=…, maxSdkVersion=…) certificate …" instead of "Signer #1 …".
 if grep -qE '^Signer (#1|\([^)]*\)) certificate DN: .*CN=Android Debug' <<<"$certs"; then fail "signed with an Android Debug certificate"; fi
 digests=$(sed -nE 's/^Signer (#1|\([^)]*\)) certificate SHA-256 digest: ([0-9a-fA-F]+)$/\2/p' <<<"$certs" | tr 'A-F' 'a-f' | sort -u)
-[ "$(grep -c . <<<"$digests")" = 1 ] || fail "expected one signer certificate digest, got: $(tr '\n' ' ' <<<"${digests:-none}")"
+[ "$(grep -c . <<<"$digests")" = 1 ] || fail "expected one signer certificate digest, got: $(tr '\n' ' ' <<<"${digests:-none}") (apksigner $("$BT/apksigner" --version 2>/dev/null); signer lines: $(grep -E '^Signer|certificate SHA-256' <<<"$certs" | head -4 | tr '\n' '|'))"
 digest=$digests
 [ "$digest" = "$PIN" ] || fail "signer certificate SHA-256 ${digest:-none} is not the pinned $PIN"
 

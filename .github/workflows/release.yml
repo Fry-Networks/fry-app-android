@@ -58,7 +58,13 @@ jobs:
         with:
           # The runner's cmdline-tools no longer ship the legacy 'tools' package (the action's default),
           # which makes sdkmanager exit 1; the preinstalled platforms and build-tools are all this job needs.
-          packages: 'platform-tools'
+          packages: 'platform-tools build-tools;35.0.0'
+
+      - name: Pin build-tools 35.0.0 (signing and verify_apk.sh use the version the gate is tested against)
+        run: |
+          set -eu
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_ENV"
 
       - name: Resolve tag, channel and version
         id: v
@@ -119,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$KS_B64" ] && [ -n "$FRY_KS_PASS" ] && [ -n "$FRY_KEY_ALIAS" ] && [ -n "$FRY_KEY_PASS" ] || { echo "release signing secrets missing"; exit 1; }
-          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          BT="${ANDROID_BUILD_TOOLS:-$ANDROID_HOME/build-tools/35.0.0}"
           umask 077
           printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
           "$BT/zipalign" -p -f 4 "$RUNNER_TEMP/unsigned.apk" "$RUNNER_TEMP/aligned.apk"
@@ -135,7 +141,7 @@ jobs:
           gh release download '${{ steps.v.outputs.promote }}' --repo "$GITHUB_REPOSITORY" --pattern 'fryapp-*.apk' --dir promote
           ls promote
           cp promote/fryapp-*.apk '${{ steps.v.outputs.asset }}'
-          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          BT="${ANDROID_BUILD_TOOLS:-$ANDROID_HOME/build-tools/35.0.0}"
           CODE=$("$BT/aapt2" dump badging '${{ steps.v.outputs.asset }}' | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
           NAME=$("$BT/aapt2" dump badging '${{ steps.v.outputs.asset }}' | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
           [ "$NAME" = '${{ steps.v.outputs.name }}' ] || { echo "promoted APK is $NAME, tag says ${{ steps.v.outputs.name }}"; exit 1; }
