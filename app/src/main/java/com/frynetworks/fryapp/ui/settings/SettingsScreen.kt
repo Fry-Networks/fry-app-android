@@ -46,9 +46,9 @@ private object FryLinks {
     const val DASHBOARD = "https://dashboard.frynetworks.com"
     // The site's own /docs redirect lands here, so use the canonical target directly.
     const val DOCS = "https://docs.frynetworks.com/docs/"
-    // Verified against the live frynetworks.com, which links here; the previous
-    // https://frynetworks.com/discord was a placeholder and returns 404.
-    const val DISCORD = "https://discord.gg/frynetworks"
+    // The canonical invite host Fry owns. Never link a third-party invite code: the previous
+    // one was hijacked (2026-09-28) and https://frynetworks.com/discord returns 404.
+    const val DISCORD = "https://discord.frynetworks.com"
 }
 
 @Composable
