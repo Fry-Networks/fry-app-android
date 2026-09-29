@@ -24,6 +24,8 @@ PIN=$(tr -d ' \r\n' < "$PIN_FILE" | tr 'A-F' 'a-f')
 
 certs=$("$BT/apksigner" verify --verbose --print-certs "$APK" 2>&1) || fail "apksigner verify failed: $(tail -1 <<<"$certs")"
 grep -q '^Verified using v1 scheme (JAR signing): false' <<<"$certs" || fail "v1 (JAR) signing must be off"
+# apksigner reports v1 as unused for minSdk >= 24 even when JAR signature files are present, so check the archive too.
+if unzip -Z1 "$APK" | grep -qE '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then fail "v1 (JAR) signing must be off (signature files in META-INF)"; fi
 grep -q '^Verified using v2 scheme (APK Signature Scheme v2): true' <<<"$certs" || fail "not signed with scheme v2"
 grep -q '^Verified using v3 scheme (APK Signature Scheme v3): true' <<<"$certs" || fail "not signed with scheme v3"
 grep -q '^Number of signers: 1$' <<<"$certs" || fail "expected exactly one signer"
