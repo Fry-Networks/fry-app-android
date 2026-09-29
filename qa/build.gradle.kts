@@ -37,4 +37,6 @@ dependencies {
     implementation("androidx.test:runner:1.7.0")
     implementation("androidx.test:rules:1.7.0")
     implementation(libs.androidx.test.uiautomator)
+    // The target-package guard: a JVM module, so it has real unit tests (./gradlew :qa-guard:test).
+    implementation(project(":qa-guard"))
 }

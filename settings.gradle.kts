@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 rootProject.name = "FryApp"
 include(":app")
 include(":qa")
+include(":qa-guard")

@@ -1,7 +1,6 @@
 package com.frynetworks.fryqa
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Until
 import com.frynetworks.fryqa.Qa.optStringOrNull
 import org.junit.Assert.assertEquals
@@ -17,6 +16,8 @@ import java.util.regex.Pattern
  *   -e ackActiveElsewhere true   (tick the "active on another install" box if it appears)
  * provision.json supplies ssid, pass, wallet, minerKey. A pass is Connected, or a handoff the
  * dashboard confirmed; the JSONL row has the final status text and duration per iteration.
+ * The first encrypted key write may raise Android's Bluetooth pairing consent; its "Pair" button
+ * (in Settings) is the only thing outside the app this test presses.
  */
 @RunWith(AndroidJUnit4::class)
 class BleProvisionLoopTest {
@@ -49,7 +50,7 @@ class BleProvisionLoopTest {
         Qa.tap("nav_scan")
         Qa.tap("scan_start")
         Qa.allowPermissionDialogs(timeoutMs = 2_000)
-        val row = Qa.device.wait(Until.findObject(By.res(Pattern.compile("scan_result_name_\\d+")).textContains(board)), 30_000)
+        val row = Qa.device.wait(Until.findObject(Qa.res(Pattern.compile("scan_result_name_\\d+")).textContains(board)), 30_000)
             ?: return "board not found"
         row.click()
         Qa.type("prov_ssid", cfg.getString("ssid"))
@@ -58,22 +59,24 @@ class BleProvisionLoopTest {
         if (keyMode == "owner") {
             Qa.type("prov_key", cfg.getString("minerKey"))
             Qa.find(Qa.res("prov_key_check"), 15_000)
-            Qa.device.findObject(By.res("prov_key_ack"))?.let { box -> if (ack) box.click() else return "key active elsewhere (not acknowledged)" }
+            Qa.device.findObject(Qa.res("prov_key_ack"))?.let { box -> if (ack) box.click() else return "key active elsewhere (not acknowledged)" }
         }
         Qa.hideKeyboard() // so the submit button is on screen
         (Qa.scrollTo(Qa.res("prov_submit")) ?: return "no submit button").click()
         // Terminal: Success navigates to the device screen; Error / handoff stay on prov_status.
         val deadline = System.currentTimeMillis() + 200_000
+        var pairingAccepted = false
         while (System.currentTimeMillis() < deadline) {
-            if (Qa.device.hasObject(By.res("prov_continue"))) return "Connected (board kept its own key)"
-            if (!Qa.device.hasObject(By.res("prov_status"))) return "Connected (left provisioning screen)"
-            val status = Qa.device.findObject(By.res("prov_status"))?.text.orEmpty()
+            if (!pairingAccepted && Qa.acceptPairingConsent()) pairingAccepted = true
+            if (Qa.device.hasObject(Qa.res("prov_continue"))) return "Connected (board kept its own key)"
+            if (!Qa.device.hasObject(Qa.res("prov_status"))) return "Connected (left provisioning screen)"
+            val status = Qa.device.findObject(Qa.res("prov_status"))?.text.orEmpty()
             when {
                 status.startsWith("Error:") -> return status
-                Qa.device.hasObject(By.res("prov_open_device")) -> return "handoff-unconfirmed: $status"
+                Qa.device.hasObject(Qa.res("prov_open_device")) -> return "handoff-unconfirmed: $status"
             }
             Thread.sleep(1_000)
         }
-        return "timeout: " + Qa.device.findObject(By.res("prov_status"))?.text
+        return "timeout: " + Qa.device.findObject(Qa.res("prov_status"))?.text
     }
 }

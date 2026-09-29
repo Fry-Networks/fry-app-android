@@ -17,22 +17,30 @@ import java.io.File
 
 /**
  * Shared plumbing for the QA suites. Everything is addressed by resource-id (the app exposes its
- * Compose test tags as bare resource-ids) or by visible text; never by screen coordinates.
+ * Compose test tags as bare resource-ids) or by visible text; never by screen coordinates. Every
+ * selector is confined to one package: the app under test, the permission controller, the package
+ * installer, or Android Settings for the one Bluetooth pairing consent button, so a dialog from
+ * any other app sharing the phone is never touched.
  *
  * Instrumentation arguments (`am instrument -e name value`) carry only non-secret switches:
- * `targetPackage` (default com.frynetworks.fryapp), `board`, `iterations`, `keyMode`,
- * `expectChannel`, `ackActiveElsewhere`. Wi-Fi credentials, wallet and miner key come from
- * `<qa external files dir>/provision.json`, pushed by the operator's harness, so they never
+ * `targetPackage` (a Fry app package only, default com.frynetworks.fryapp), `board`, `iterations`,
+ * `keyMode`, `expectChannel`, `ackActiveElsewhere`. Wi-Fi credentials, wallet and miner key come
+ * from `<qa external files dir>/provision.json`, pushed by the operator's harness, so they never
  * appear in a process list. Results are appended to `<qa files dir>/results.jsonl` with keys
  * masked to 6 characters and no passwords.
  */
 object Qa {
+    const val PERMISSION_CONTROLLER = "com.android.permissioncontroller"
+    val INSTALLERS = listOf("com.google.android.packageinstaller", "com.android.packageinstaller")
+    private const val SETTINGS = "com.android.settings"
+
     val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     val device: UiDevice get() = UiDevice.getInstance(instrumentation)
     val args: Bundle get() = InstrumentationRegistry.getArguments()
     private val self: Context get() = instrumentation.context
 
-    val targetPackage: String get() = args.getString("targetPackage") ?: "com.frynetworks.fryapp"
+    /** Refuses anything but the Fry app packages before a single window is touched. */
+    val targetPackage: String get() = QaTarget.checked(args.getString("targetPackage"))
 
     fun arg(name: String, default: String): String = args.getString(name) ?: default
 
@@ -66,7 +74,14 @@ object Qa {
         check(device.wait(Until.hasObject(By.pkg(targetPackage).depth(0)), timeoutMs)) { "$targetPackage did not come to the foreground" }
     }
 
-    fun res(id: String): BySelector = By.res(id)
+    /** A resource-id inside the app under test only. */
+    fun res(id: String): BySelector = By.res(id).pkg(targetPackage)
+
+    /** A resource-id pattern inside the app under test only. */
+    fun res(pattern: java.util.regex.Pattern): BySelector = By.res(pattern).pkg(targetPackage)
+
+    /** Visible text inside the app under test only. */
+    fun text(value: String): BySelector = By.text(value).pkg(targetPackage)
 
     fun find(selector: BySelector, timeoutMs: Long = 10_000): UiObject2? = device.wait(Until.findObject(selector), timeoutMs)
 
@@ -75,11 +90,11 @@ object Qa {
 
     fun tap(id: String, timeoutMs: Long = 10_000) = need(res(id), id, timeoutMs).click()
 
-    /** Scrolls the first scrollable container until [selector] shows (Compose lists are lazy). */
+    /** Scrolls the app's first scrollable container until [selector] shows (Compose lists are lazy). */
     fun scrollTo(selector: BySelector, maxSwipes: Int = 8): UiObject2? {
         repeat(maxSwipes) {
             device.findObject(selector)?.let { return it }
-            device.findObject(By.scrollable(true))?.scroll(androidx.test.uiautomator.Direction.DOWN, 0.8f) ?: return null
+            device.findObject(By.scrollable(true).pkg(targetPackage))?.scroll(androidx.test.uiautomator.Direction.DOWN, 0.8f) ?: return null
         }
         return device.findObject(selector)
     }
@@ -106,25 +121,37 @@ object Qa {
 
     /**
      * Answers Android's runtime permission dialogs positively, by the permission controller's
-     * resource ids (with the visible button text as fallback). Returns how many were answered.
+     * resource ids (with the visible button text as fallback), inside the permission controller
+     * only. Returns how many were answered.
      */
     fun allowPermissionDialogs(maxDialogs: Int = 6, timeoutMs: Long = 4_000): Int {
         val allow = listOf(
-            By.res("com.android.permissioncontroller:id/permission_allow_foreground_only_button"),
-            By.res("com.android.permissioncontroller:id/permission_allow_button"),
-            By.text("While using the app"),
-            By.text("Allow"),
+            By.pkg(PERMISSION_CONTROLLER).res("$PERMISSION_CONTROLLER:id/permission_allow_foreground_only_button"),
+            By.pkg(PERMISSION_CONTROLLER).res("$PERMISSION_CONTROLLER:id/permission_allow_button"),
+            By.pkg(PERMISSION_CONTROLLER).text("While using the app"),
+            By.pkg(PERMISSION_CONTROLLER).text("Allow"),
         )
         var answered = 0
         repeat(maxDialogs) {
             // Android 12+ asks precise vs approximate first: BLE scanning needs precise.
-            device.findObject(By.res("com.android.permissioncontroller:id/permission_location_accuracy_radio_fine"))?.click()
+            device.findObject(By.pkg(PERMISSION_CONTROLLER).res("$PERMISSION_CONTROLLER:id/permission_location_accuracy_radio_fine"))?.click()
             val button = allow.firstNotNullOfOrNull { device.wait(Until.findObject(it), if (answered == 0) timeoutMs else 1_500) } ?: return answered
             button.click()
             answered++
             device.waitForIdle()
         }
         return answered
+    }
+
+    /**
+     * The one Settings interaction allowed: the "Pair" button of Android's Bluetooth pairing
+     * consent, which the first encrypted `09` write raises on many phones. Returns true if pressed.
+     */
+    fun acceptPairingConsent(): Boolean {
+        val pair = device.findObject(By.pkg(SETTINGS).text("Pair")) ?: return false
+        pair.click()
+        device.waitForIdle()
+        return true
     }
 
     fun hasPermission(permission: String): Boolean =
