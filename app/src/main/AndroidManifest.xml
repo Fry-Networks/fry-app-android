@@ -24,6 +24,8 @@
     <!-- Self-update (O-2): PackageInstaller sessions; silent updates once this app is the installer of record. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <!-- API 34+: SessionParams.setRequestUpdateOwnership (normal permission). -->
+    <uses-permission android:name="android.permission.ENFORCE_UPDATE_OWNERSHIP" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 

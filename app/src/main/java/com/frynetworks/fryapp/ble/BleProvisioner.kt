@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import android.util.Log
@@ -406,7 +407,7 @@ class BleProvisioner @Inject constructor(
                             characteristic,
                             value,
                             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                        ) == BluetoothGatt.GATT_SUCCESS
+                        ) == BluetoothStatusCodes.SUCCESS // anything else, e.g. ERROR_GATT_WRITE_REQUEST_BUSY, is a refusal
                     } else {
                         @Suppress("DEPRECATION")
                         run {
@@ -453,7 +454,7 @@ class BleProvisioner @Inject constructor(
                     characteristic,
                     value,
                     BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                ) == BluetoothGatt.GATT_SUCCESS
+                ) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
                 run {
