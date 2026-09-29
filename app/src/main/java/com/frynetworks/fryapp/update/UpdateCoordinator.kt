@@ -103,8 +103,9 @@ class UpdateCoordinator(
             apk.delete()
             return UpdateState.Failed("Update refused: ${verdict.reason}.")
         }
-        // Provisioning, a transaction or the user's return may have started while the APK downloaded.
-        deferred(trigger, offer)?.let { return it }
+        // Provisioning, a transaction or the user's return may have started while the APK
+        // downloaded; a deferred APK is not kept around (the next pass downloads afresh).
+        deferred(trigger, offer)?.let { apk.delete(); return it }
         return if (sources.install(apk, installedPackage)) {
             UpdateState.Installing(offer.versionName)
         } else {

@@ -50,12 +50,13 @@ class UpdateInstallGateTest {
         var onDownload: () -> Unit = {}
         val downloads = mutableListOf<UpdateManifest>()
         val installs = mutableListOf<File>()
+        var lastApk: File? = null
         override fun channel() = UpdateChannel.STABLE
         override fun manifestText(channel: UpdateChannel): String? = UpdateFixtures.json(versionCode = 7)
         override fun download(manifest: UpdateManifest): DownloadResult {
             downloads += manifest
             onDownload()
-            return DownloadResult.Ok(File.createTempFile("fryapp-7-", ".apk", tmp.root))
+            return DownloadResult.Ok(File.createTempFile("fryapp-7-", ".apk", tmp.root).also { lastApk = it })
         }
         override fun installedSigner() = SignerFacts(PKG, 6, setOf(PIN))
         override fun candidateSigner(apk: File) = SignerFacts(PKG, 7, setOf(PIN), setOf(PIN))
@@ -139,10 +140,11 @@ class UpdateInstallGateTest {
     }
 
     @Test
-    fun `the app coming to the foreground during the download still defers the install`() = runTest {
+    fun `the app coming to the foreground during the download still defers the install, and the APK is not kept`() = runTest {
         sources.onDownload = { onScreen = true }
         assertEquals(UpdateState.Deferred("0.4.1-rc.1", UpdateCoordinator.DEFERRED_IN_USE), coordinator.check(UpdateTrigger.DAILY))
         assertEquals(1, sources.downloads.size)
         assertTrue(sources.installs.isEmpty())
+        assertFalse("a deferred download is deleted", sources.lastApk!!.exists())
     }
 }
