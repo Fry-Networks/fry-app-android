@@ -157,10 +157,15 @@ class WifiProvisioner @Inject constructor(
         minerKey: String?,
         setupCode: String?,
     ): Flow<SoftApEvent> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            joinAndProvision(apSsid, wifiSsid, wifiPass, wallet, minerKey, setupCode)
-        } else {
-            flowOf(SoftApEvent.Failed(SOFTAP_NEEDS_ANDROID_10))
+        when (val plan = JoinStrategy.decide(Build.VERSION.SDK_INT, apSsid, setupCode)) {
+            JoinPlan.NeedsAndroid10 -> flowOf(SoftApEvent.Failed(SOFTAP_NEEDS_ANDROID_10))
+            // The SDK check is repeated here only so lint can see the @RequiresApi call is guarded.
+            is JoinPlan.Specifier ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    joinAndProvision(plan.ssid, wifiSsid, wifiPass, wallet, minerKey, plan.wpa2Passphrase)
+                } else {
+                    flowOf(SoftApEvent.Failed(SOFTAP_NEEDS_ANDROID_10))
+                }
         }
 
     @RequiresApi(Build.VERSION_CODES.Q)
