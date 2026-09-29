@@ -16,8 +16,9 @@ android {
         applicationId = "com.frynetworks.fryapp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.1"
+        // Release builds pass -PfryVersionCode / -PfryVersionName (release.yml); these are the defaults.
+        versionCode = (project.findProperty("fryVersionCode") as String?)?.toInt() ?: 6
+        versionName = (project.findProperty("fryVersionName") as String?) ?: "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -52,6 +53,8 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
+            // Signed after the build by apksigner (release.yml, tools/release/verify_apk.sh); no signingConfig here.
+            isDebuggable = false
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

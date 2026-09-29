@@ -1,0 +1,172 @@
+name: Release
+
+# Signed app releases and the self-update manifest (D-6, D-7, contract C-6).
+#   app-vX.Y.Z           stable release, marked latest (releases/latest/download/fryapp-update.json)
+#   app-vX.Y.Z-rc.N      test prerelease; versionName X.Y.Z-rc.N
+#   app-vX.Y.Z-test.N    test prerelease; versionName X.Y.Z (a test build of the final version)
+# Test prereleases also refresh the fixed prerelease "update-channel-test", whose
+# fryapp-update.json is the test channel's pointer.
+# The versionCode comes from the annotated tag message ("versionCode: N") or the dispatch input.
+# "promote_from" republishes a test release's APK byte-identical under a stable tag (no rebuild).
+# The existing build.yml (tags v*) never runs for app-v* tags.
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (app-vX.Y.Z, app-vX.Y.Z-rc.N or app-vX.Y.Z-test.N)"
+        required: true
+      version_code:
+        description: "versionCode (required unless promote_from is set)"
+        required: false
+      promote_from:
+        description: "Test release tag whose APK is republished byte-identical under a stable tag"
+        required: false
+      min_supported:
+        description: "minSupportedVersionCode for the manifest"
+        required: false
+        default: "6"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: com.frynetworks.fryapp
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Resolve tag, channel and version
+        id: v
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CODE: ${{ inputs.version_code }}
+          INPUT_PROMOTE: ${{ inputs.promote_from }}
+          INPUT_MIN: ${{ inputs.min_supported }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then TAG="$INPUT_TAG"; else TAG="${GITHUB_REF_NAME}"; fi
+          [[ "$TAG" =~ ^app-v([0-9]+\.[0-9]+\.[0-9]+)(-(rc|test)\.[0-9]+)?$ ]] || { echo "bad tag $TAG"; exit 1; }
+          BASE="${BASH_REMATCH[1]}"; KIND="${BASH_REMATCH[3]:-}"
+          case "$KIND" in
+            "") CHANNEL=stable; NAME="$BASE" ;;
+            rc) CHANNEL=test; NAME="$BASE${BASH_REMATCH[2]}" ;;
+            test) CHANNEL=test; NAME="$BASE" ;;
+          esac
+          CODE="${INPUT_CODE:-}"
+          if [ -z "$CODE" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            CODE=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed -n 's/^versionCode:[[:space:]]*\([0-9]\+\)[[:space:]]*$/\1/p' | head -1)
+          fi
+          PROMOTE="${INPUT_PROMOTE:-}"
+          if [ -n "$PROMOTE" ]; then
+            [ "$CHANNEL" = stable ] || { echo "promote_from needs a stable tag"; exit 1; }
+            [[ "$PROMOTE" =~ ^app-v[0-9]+\.[0-9]+\.[0-9]+-(rc|test)\.[0-9]+$ ]] || { echo "bad promote_from $PROMOTE"; exit 1; }
+          else
+            [[ "$CODE" =~ ^[0-9]+$ ]] || { echo "versionCode missing: put 'versionCode: N' in the annotated tag message or pass version_code"; exit 1; }
+          fi
+          MIN="${INPUT_MIN:-6}"
+          {
+            echo "tag=$TAG"; echo "channel=$CHANNEL"; echo "name=$NAME"; echo "code=$CODE"
+            echo "promote=$PROMOTE"; echo "min=$MIN"; echo "asset=fryapp-$NAME.apk"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the unsigned release APK
+        if: steps.v.outputs.promote == ''
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --console=plain testDebugUnitTest assembleRelease \
+            -PfryVersionCode='${{ steps.v.outputs.code }}' -PfryVersionName='${{ steps.v.outputs.name }}'
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/unsigned.apk"
+
+      - name: Sign (zipalign, apksigner v2 + v3, v1 off)
+        if: steps.v.outputs.promote == ''
+        env:
+          KS_B64: ${{ secrets.FRY_ANDROID_RELEASE_KEYSTORE_B64 }}
+          FRY_KS_PASS: ${{ secrets.FRY_ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          FRY_KEY_ALIAS: ${{ secrets.FRY_ANDROID_RELEASE_KEY_ALIAS }}
+          FRY_KEY_PASS: ${{ secrets.FRY_ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$KS_B64" ] && [ -n "$FRY_KS_PASS" ] && [ -n "$FRY_KEY_ALIAS" ] && [ -n "$FRY_KEY_PASS" ] || { echo "release signing secrets missing"; exit 1; }
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          umask 077
+          printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          "$BT/zipalign" -p -f 4 "$RUNNER_TEMP/unsigned.apk" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/release.p12" --ks-type PKCS12 --ks-pass env:FRY_KS_PASS \
+            --ks-key-alias "$FRY_KEY_ALIAS" --key-pass env:FRY_KEY_PASS \
+            --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true \
+            --out "${{ steps.v.outputs.asset }}" "$RUNNER_TEMP/aligned.apk"
+
+      - name: Fetch the test release APK to promote (byte-identical)
+        if: steps.v.outputs.promote != ''
+        run: |
+          set -euo pipefail
+          gh release download '${{ steps.v.outputs.promote }}' --repo "$GITHUB_REPOSITORY" --pattern 'fryapp-*.apk' --dir promote
+          ls promote
+          cp promote/fryapp-*.apk '${{ steps.v.outputs.asset }}'
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          CODE=$("$BT/aapt2" dump badging '${{ steps.v.outputs.asset }}' | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
+          NAME=$("$BT/aapt2" dump badging '${{ steps.v.outputs.asset }}' | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
+          [ "$NAME" = '${{ steps.v.outputs.name }}' ] || { echo "promoted APK is $NAME, tag says ${{ steps.v.outputs.name }}"; exit 1; }
+          echo "PROMOTED_CODE=$CODE" >> "$GITHUB_ENV"
+
+      - name: Verify gate (pinned cert, not debug, not debuggable, package, versionCode)
+        run: |
+          set -euo pipefail
+          CODE='${{ steps.v.outputs.code }}'; CODE="${PROMOTED_CODE:-$CODE}"
+          tools/release/verify_apk.sh '${{ steps.v.outputs.asset }}' "$PACKAGE" "$CODE"
+          echo "FINAL_CODE=$CODE" >> "$GITHUB_ENV"
+
+      - name: Write fryapp-update.json
+        run: |
+          set -euo pipefail
+          python3 tools/release/make_update_manifest.py --apk '${{ steps.v.outputs.asset }}' --tag '${{ steps.v.outputs.tag }}' \
+            --channel '${{ steps.v.outputs.channel }}' --version-code "$FINAL_CODE" --version-name '${{ steps.v.outputs.name }}' \
+            --min-supported '${{ steps.v.outputs.min }}' --cert signing/release-cert.sha256 \
+            --notes "Fry app ${{ steps.v.outputs.name }}" --out fryapp-update.json
+          sha256sum '${{ steps.v.outputs.asset }}' fryapp-update.json | tee SHA256SUMS
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.v.outputs.tag }}'
+          if [ '${{ steps.v.outputs.channel }}' = stable ]; then FLAGS=(--latest); else FLAGS=(--prerelease --latest=false); fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then FLAGS+=(--target "$GITHUB_SHA"); fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Fry app ${{ steps.v.outputs.name }}" \
+            --notes "Fry app ${{ steps.v.outputs.name }} (versionCode $FINAL_CODE, ${{ steps.v.outputs.channel }} channel)." \
+            "${FLAGS[@]}" '${{ steps.v.outputs.asset }}' fryapp-update.json SHA256SUMS
+
+      - name: Point the test channel at this build
+        if: steps.v.outputs.channel == 'test'
+        run: |
+          set -euo pipefail
+          if ! gh release view update-channel-test --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create update-channel-test --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "App test channel pointer" --notes "fryapp-update.json here is the test channel's current build. Do not use as a download page."
+          fi
+          gh release upload update-channel-test --repo "$GITHUB_REPOSITORY" fryapp-update.json --clobber
+
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12" "$RUNNER_TEMP/unsigned.apk" "$RUNNER_TEMP/aligned.apk"
