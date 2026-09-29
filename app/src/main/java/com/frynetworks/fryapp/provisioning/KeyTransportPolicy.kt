@@ -8,6 +8,9 @@ data class DeviceCapabilities(
     val keyConfirmed: Boolean? = null,
     val fw: String? = null,
     val ota: String? = null,
+    /** `0A` `"s"` and `"d"`: the board's current state and error detail; null when not reported. */
+    val state: Int? = null,
+    val detail: Int? = null,
 ) {
     val keyWrite: Boolean get() = proto >= 2 && CAP_KEY_WRITE in caps
     val errorReset: Boolean get() = proto >= 2 && CAP_ERROR_RESET in caps
@@ -42,6 +45,18 @@ sealed interface KeyTransport {
 object KeyTransportPolicy {
 
     const val OPEN_AP_REFUSAL = "This board's setup network is open, so Fry will not send a miner key over it. It already has a key; to change it, use the USB web setup."
+
+    /** PROTOCOL.md 11.8: the errors a running board keeps while it ignores unencrypted 01/02/03 writes. */
+    val API_SIDE_ERRORS = setOf(4, 6, 9, 10, 11, 12, 13)
+    private const val STATE_ERROR = 4
+
+    /**
+     * True when a v1.1 board sits in an API-side error and no owner key is about to be written:
+     * over the unencrypted link the Wi-Fi settings would be ignored (11.8), so the user has to
+     * enter the FEM- key first (its `09` write pairs the link and the board starts a new attempt).
+     */
+    fun keyNeededBeforeWrite(caps: DeviceCapabilities, ownerKey: String?): Boolean =
+        ownerKey == null && caps.proto >= 2 && caps.state == STATE_ERROR && caps.detail in API_SIDE_ERRORS
 
     fun forBle(caps: DeviceCapabilities): KeyTransport =
         if (caps.keyWrite) KeyTransport.Send else KeyTransport.DeviceKeeps

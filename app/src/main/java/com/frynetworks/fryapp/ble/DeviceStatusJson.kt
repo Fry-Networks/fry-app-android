@@ -30,6 +30,8 @@ object DeviceStatusJson {
             keyConfirmed = obj.int("kc")?.let { it == 1 },
             fw = obj.str("fw"),
             ota = obj.str("ota"),
+            state = obj.int("s"),
+            detail = obj.int("d"),
         )
     }
 

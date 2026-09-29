@@ -317,6 +317,14 @@ class BleProvisioner @Inject constructor(
             val caps = readChar(FryGattContract.CHAR_DEVICE_STATUS)?.let { DeviceStatusJson.parse(it) } ?: DeviceCapabilities.PROTO_1
             emit(ProvisionEvent.Capabilities(caps))
 
+            // PROTOCOL.md 11.8: a running board in an API-side error ignores 01/02/03 over an
+            // unencrypted link, and only a `09` write (which pairs) encrypts it. With no key to
+            // write the settings would be dropped silently, so ask for the key instead.
+            if (KeyTransportPolicy.keyNeededBeforeWrite(caps, minerKey)) {
+                emit(ProvisionEvent.StatusUpdate(ProvStatus(ProvState.ERROR, ProvError.KEY_REQUIRED)))
+                return true
+            }
+
             enableStatusNotifications()
 
             val keySteps = if (minerKey != null && KeyTransportPolicy.forBle(caps) == KeyTransport.Send) {
