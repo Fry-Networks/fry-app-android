@@ -27,4 +27,6 @@ class AndroidUpdateSources(
     override fun candidateSigner(apk: File): SignerFacts? = inspector.candidate(apk)
 
     override fun install(apk: File, packageName: String): Boolean = installer.install(apk, packageName)
+
+    override fun install(apk: File, packageName: String, mayCommit: () -> Boolean): Boolean = installer.install(apk, packageName, mayCommit)
 }

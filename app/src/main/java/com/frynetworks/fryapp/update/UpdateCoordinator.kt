@@ -34,6 +34,12 @@ interface UpdateSources {
     fun installedSigner(): SignerFacts?
     fun candidateSigner(apk: File): SignerFacts?
     fun install(apk: File, packageName: String): Boolean
+
+    /**
+     * Like [install], but [mayCommit] is asked once more right before the session commits (the
+     * APK write into the session takes a moment): false abandons the session and returns false.
+     */
+    fun install(apk: File, packageName: String, mayCommit: () -> Boolean): Boolean = install(apk, packageName)
 }
 
 /**
@@ -106,10 +112,11 @@ class UpdateCoordinator(
         // Provisioning, a transaction or the user's return may have started while the APK
         // downloaded; a deferred APK is not kept around (the next pass downloads afresh).
         deferred(trigger, offer)?.let { apk.delete(); return it }
-        return if (sources.install(apk, installedPackage)) {
-            UpdateState.Installing(offer.versionName)
-        } else {
-            UpdateState.Failed("Android would not start the update.")
+        // The session write takes a moment too: the gateway asks once more right before the commit.
+        val committed = sources.install(apk, installedPackage) { deferred(trigger, offer) == null }
+        return when {
+            committed -> UpdateState.Installing(offer.versionName)
+            else -> deferred(trigger, offer)?.also { apk.delete() } ?: UpdateState.Failed("Android would not start the update.")
         }
     }
 

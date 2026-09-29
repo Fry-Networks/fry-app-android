@@ -15,7 +15,15 @@ import java.io.File
  */
 class PackageInstallerGateway(private val context: Context) {
 
-    fun install(apk: File, packageName: String): Boolean = runCatching {
+    fun install(apk: File, packageName: String): Boolean = install(apk, packageName) { true }
+
+    /**
+     * [mayCommit] is asked right before `session.commit()`, after the APK has been written into
+     * the session (which takes a moment): a false answer abandons the session and returns false,
+     * so a board setup, a signed transaction or an activity that appeared meanwhile is never
+     * killed by a silent install.
+     */
+    fun install(apk: File, packageName: String, mayCommit: () -> Boolean): Boolean = runCatching {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(packageName)
@@ -32,6 +40,10 @@ class PackageInstallerGateway(private val context: Context) {
             session.openWrite("base.apk", 0, apk.length()).use { out ->
                 apk.inputStream().use { it.copyTo(out) }
                 session.fsync(out)
+            }
+            if (!mayCommit()) {
+                session.abandon()
+                return@runCatching false
             }
             val intent = Intent(context, InstallStatusReceiver::class.java)
                 .setAction(InstallStatusReceiver.ACTION)
