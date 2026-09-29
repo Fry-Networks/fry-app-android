@@ -80,6 +80,8 @@ object ProvisionErrorCopy {
             "The board did not accept the settings. Move the phone closer and try again."
         reason.startsWith("GATT disconnected") ->
             "The Bluetooth connection dropped before the settings were sent. Move the phone closer and try again."
+        reason == "Pairing failed" ->
+            "The phone did not pair with the board, so the miner key was not sent. Tap Pair when Android asks, keep the phone within 2 metres, and try again."
         reason == "Provisioning timed out" ->
             "The board did not finish within 2 minutes. If it joined Wi-Fi it registers by itself; otherwise restart it and try again."
         reason == "Bluetooth adapter unavailable" ->

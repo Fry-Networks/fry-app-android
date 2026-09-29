@@ -24,6 +24,8 @@ import java.util.UUID
  * session's timeouts and settles run in virtual time. Reads answer at once; a write completes
  * after [writeDelayMs] for its characteristic (and a prepared write's execute after
  * [executeDelayMs]); the wallet write is followed by the [statusAfterWallet] notification.
+ * Android's bond with the board is [bondState]; createBond() moves it to BONDED after
+ * [pairDelayMs] (back to NONE when [pairingDeclined]).
  */
 @Suppress("DEPRECATION")
 class FakeGattBoard(
@@ -44,6 +46,26 @@ class FakeGattBoard(
     /** Delay before a prepared write's execute completes, per characteristic. */
     var executeDelayMs: Map<UUID, Long> = emptyMap()
     var statusAfterWallet: ByteArray = byteArrayOf(3)
+
+    /** Android's bond with the board, as BluetoothDevice.getBondState() reports it. */
+    @Volatile var bondState = BluetoothDevice.BOND_NONE
+    var pairDelayMs = 0L
+    var pairingDeclined = false
+    var createBondCalls = 0
+
+    /**
+     * Android as seen on a Galaxy S22 (Android 16): a `09` write on an unpaired link starts
+     * pairing, pairing succeeds, and the write is never sent to the board nor reported back.
+     */
+    var losesWriteThatPairs = false
+
+    /**
+     * Android holds a bond the board does not keep: on the next connect Android encrypts, the board
+     * has no key, and Android drops the link (status 22) and forgets the bond.
+     */
+    var staleBond = false
+    var connects = 0
+    private var connected = false
 
     /** Every value the provisioner wrote, in order, simple and prepared writes alike. */
     val writes = mutableListOf<Pair<UUID, ByteArray>>()
@@ -83,7 +105,10 @@ class FakeGattBoard(
         every { service.getCharacteristic(any()) } answers { chars[firstArg()] }
 
         every { gatt.getService(FryGattContract.SERVICE_FRY) } returns service
-        every { gatt.discoverServices() } answers { callback.onServicesDiscovered(gatt, BluetoothGatt.GATT_SUCCESS); true }
+        every { gatt.discoverServices() } answers {
+            if (connected) callback.onServicesDiscovered(gatt, BluetoothGatt.GATT_SUCCESS)
+            connected
+        }
         every { gatt.requestMtu(any()) } answers {
             if (mtuGranted) callback.onMtuChanged(gatt, firstArg(), BluetoothGatt.GATT_SUCCESS)
             else callback.onMtuChanged(gatt, FryGattContract.DEFAULT_ATT_MTU, BluetoothGatt.GATT_FAILURE)
@@ -103,6 +128,10 @@ class FakeGattBoard(
         every { gatt.writeCharacteristic(any<BluetoothGattCharacteristic>()) } answers {
             val c = firstArg<BluetoothGattCharacteristic>()
             val u = c.uuid
+            if (losesWriteThatPairs && u == FryGattContract.CHAR_MINER_KEY_WRITE && bondState != BluetoothDevice.BOND_BONDED) {
+                startPairing()
+                return@answers true // never reaches the board, never reported
+            }
             writes += u to staged.getValue(u)
             val prepared = inReliableWrite
             scope.launch {
@@ -126,15 +155,41 @@ class FakeGattBoard(
 
         val device = mockk<BluetoothDevice>()
         every { device.connectGatt(any(), any(), any(), any()) } answers {
-            callback = thirdArg()
-            callback.onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            connects++
+            val cb: BluetoothGattCallback = thirdArg()
+            callback = cb
+            connected = true
+            cb.onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            if (staleBond && bondState == BluetoothDevice.BOND_BONDED) {
+                staleBond = false
+                scope.launch {
+                    delay(200)
+                    connected = false
+                    bondState = BluetoothDevice.BOND_NONE
+                    cb.onConnectionStateChange(gatt, 22, BluetoothProfile.STATE_DISCONNECTED)
+                }
+            }
             gatt
+        }
+        every { device.bondState } answers { bondState }
+        every { device.createBond() } answers {
+            createBondCalls++
+            startPairing()
+            true
         }
         val adapter = mockk<BluetoothAdapter>()
         every { adapter.getRemoteDevice(any<String>()) } returns device
         val manager = mockk<BluetoothManager>()
         every { manager.adapter } returns adapter
         every { context.getSystemService(Context.BLUETOOTH_SERVICE) } returns manager
+    }
+
+    private fun startPairing() {
+        bondState = BluetoothDevice.BOND_BONDING
+        scope.launch {
+            delay(pairDelayMs)
+            bondState = if (pairingDeclined) BluetoothDevice.BOND_NONE else BluetoothDevice.BOND_BONDED
+        }
     }
 
     private fun notifyStatus() {

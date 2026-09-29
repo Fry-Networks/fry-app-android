@@ -65,9 +65,14 @@ private const val GATT_ERROR_133 = 133
 private const val GATT_TIMEOUT = -1
 internal const val GATT_CALL_REJECTED = -2
 internal const val OP_TIMEOUT_MS = 5_000L
-// The first `09` write starts LESC pairing (ECDH on the board, often a system consent dialog) and
-// Android reports the write only once pairing is done, so that write gets its own window.
+// The `09` write is the first write on a freshly encrypted link (ECDH on the board), so it gets
+// its own window.
 internal const val KEY_WRITE_TIMEOUT_MS = 30_000L
+// PROTOCOL.md 11.3: `09` needs an encrypted link, so the session pairs before writing it. When the
+// write itself started pairing, Android (Galaxy S22, Android 16) paired and then never sent or
+// reported the write. Pairing may wait on the system consent dialog.
+internal const val PAIRING_TIMEOUT_MS = 30_000L
+private const val BOND_POLL_MS = 250L
 // Firmware worst case: Wi-Fi join (≤30 s) + registration with one quick retry; 60 s cut it off.
 internal const val OVERALL_TIMEOUT_MS = 120_000L
 private const val LINK_SETTLE_MS = 300L
@@ -92,6 +97,28 @@ internal suspend fun <R> retryWhileBusy(statusOf: (R) -> Int, attempt: suspend (
         result = attempt()
     }
     return result
+}
+
+/**
+ * Pairs [device] for the encrypted `09` write and waits until Android reports it bonded. A bonded
+ * device needs nothing: Android encrypts a bonded link on connect. False when pairing was refused
+ * or declined, or did not finish within [timeoutMs].
+ */
+@SuppressLint("MissingPermission")
+internal suspend fun pairForKeyWrite(device: BluetoothDevice, timeoutMs: Long = PAIRING_TIMEOUT_MS): Boolean {
+    if (device.bondState == BluetoothDevice.BOND_BONDED) return true
+    if (device.bondState != BluetoothDevice.BOND_BONDING && !device.createBond()) return false
+    return withTimeoutOrNull(timeoutMs) {
+        var sawBonding = false
+        var state = device.bondState
+        while (state != BluetoothDevice.BOND_BONDED) {
+            if (state == BluetoothDevice.BOND_BONDING) sawBonding = true
+            else if (sawBonding) return@withTimeoutOrNull false // declined, or pairing failed
+            delay(BOND_POLL_MS)
+            state = device.bondState
+        }
+        true
+    } ?: false
 }
 
 /** How long one write to [uuid] may take before it counts as failed. */
@@ -141,7 +168,21 @@ class BleProvisioner @Inject constructor(
                 return@callbackFlow
             }
 
-            val session = GattSession(device) { event -> trySend(event) }
+            // Android may hold a bond the board does not (the board pairs without bonding, or was
+            // erased): Android encrypts on connect, the board has no key, and Android drops the
+            // link and forgets the bond. The first session's failure is then held back and one
+            // fresh session pairs anew.
+            val bondedAtStart = device.bondState == BluetoothDevice.BOND_BONDED
+            var retried = false
+            var held: ProvisionEvent.Failed? = null
+            val first = GattSession(device) { event ->
+                if (bondedAtStart && event is ProvisionEvent.Failed) {
+                    if (!retried) held = event
+                } else {
+                    trySend(event)
+                }
+            }
+            var session = first
             // try/finally, not awaitClose alone. If the collector is cancelled while suspended
             // inside run() -- the user backing out of the provisioning screen, any time within a
             // 60 s window -- the CancellationException propagates straight past awaitClose, which
@@ -149,15 +190,33 @@ class BleProvisioner @Inject constructor(
             // table of concurrent GATT clients; a few leaks exhaust it and every later connect
             // fails with status 133 until Bluetooth is power-cycled.
             try {
-                val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) { session.run(steps, minerKey) }
-                if (outcome != true) {
+                val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) {
+                    var ok = first.run(steps, minerKey)
+                    if (!ok && bondedAtStart && device.bondState == BluetoothDevice.BOND_NONE) {
+                        Log.w(TAG, "the board refused Android's stored bond; pairing again in a new session")
+                        retried = true
+                        held = null
+                        first.close()
+                        delay(LINK_SETTLE_MS)
+                        session = GattSession(device) { event -> trySend(event) }
+                        ok = session.run(steps, minerKey)
+                    }
+                    ok
+                }
+                held?.let { trySend(it) }
+                // A session that returned false already reported why; only a real timeout is one.
+                if (outcome == null) {
                     trySend(ProvisionEvent.Failed("Provisioning timed out"))
                 }
             } finally {
+                first.close()
                 session.close()
             }
 
-            awaitClose { session.close() }
+            awaitClose {
+                first.close()
+                session.close()
+            }
         }
 
     /** One connect-to-terminal-status session. Not reused across calls. */
@@ -329,6 +388,11 @@ class BleProvisioner @Inject constructor(
                 }
                 is KeyPlan.Write -> listOf(WriteStep(FryGattContract.CHAR_MINER_KEY_WRITE, plan.key.toByteArray(Charsets.US_ASCII)))
                 KeyPlan.NoKeyStep -> emptyList()
+            }
+            // Pair first: a `09` write that itself starts pairing can be lost (PAIRING_TIMEOUT_MS).
+            if (keySteps.isNotEmpty() && !pairForKeyWrite(device)) {
+                emit(ProvisionEvent.Failed("Pairing failed"))
+                return false
             }
 
             enableStatusNotifications()
