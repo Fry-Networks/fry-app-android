@@ -28,6 +28,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -73,6 +75,13 @@ internal const val KEY_WRITE_TIMEOUT_MS = 30_000L
 // reported the write. Pairing may wait on the system consent dialog.
 internal const val PAIRING_TIMEOUT_MS = 30_000L
 private const val BOND_POLL_MS = 250L
+// Android forgets a refused bond a moment after the link drops (PROTOCOL.md 11.9).
+private const val BOND_DROP_WAIT_MS = 1_000L
+
+/** A v1.1 board that reports no `"enc"` in `0A` (firmware before 0.4.1) cannot take a key over BLE. */
+const val KEY_WRITE_NEEDS_USB = "Board firmware cannot take a miner key over Bluetooth"
+/** Paired, but the board does not see an encrypted link: the key is not sent. */
+const val LINK_NOT_ENCRYPTED = "Link not encrypted"
 // Firmware worst case: Wi-Fi join (≤30 s) + registration with one quick retry; 60 s cut it off.
 internal const val OVERALL_TIMEOUT_MS = 120_000L
 private const val LINK_SETTLE_MS = 300L
@@ -119,6 +128,17 @@ internal suspend fun pairForKeyWrite(device: BluetoothDevice, timeoutMs: Long = 
         }
         true
     } ?: false
+}
+
+/** True once Android has forgotten [device]'s bond, waiting up to [BOND_DROP_WAIT_MS] for it. */
+@SuppressLint("MissingPermission")
+private suspend fun bondDropped(device: BluetoothDevice): Boolean {
+    val deadline = BOND_DROP_WAIT_MS / 100
+    for (i in 0..deadline) {
+        if (device.bondState == BluetoothDevice.BOND_NONE) return true
+        if (i < deadline) delay(100)
+    }
+    return false
 }
 
 /** How long one write to [uuid] may take before it counts as failed. */
@@ -173,11 +193,12 @@ class BleProvisioner @Inject constructor(
             // link and forgets the bond. The first session's failure is then held back and one
             // fresh session pairs anew.
             val bondedAtStart = device.bondState == BluetoothDevice.BOND_BONDED
-            var retried = false
-            var held: ProvisionEvent.Failed? = null
+            // Written from Bluetooth binder threads as well as here.
+            val retried = AtomicBoolean(false)
+            val held = AtomicReference<ProvisionEvent.Failed?>(null)
             val first = GattSession(device) { event ->
                 if (bondedAtStart && event is ProvisionEvent.Failed) {
-                    if (!retried) held = event
+                    if (!retried.get()) held.compareAndSet(null, event) // the first reason is the telling one
                 } else {
                     trySend(event)
                 }
@@ -192,18 +213,18 @@ class BleProvisioner @Inject constructor(
             try {
                 val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) {
                     var ok = first.run(steps, minerKey)
-                    if (!ok && bondedAtStart && device.bondState == BluetoothDevice.BOND_NONE) {
+                    if (!ok && bondedAtStart && bondDropped(device)) {
                         Log.w(TAG, "the board refused Android's stored bond; pairing again in a new session")
-                        retried = true
-                        held = null
+                        retried.set(true)
                         first.close()
+                        held.set(null)
                         delay(LINK_SETTLE_MS)
                         session = GattSession(device) { event -> trySend(event) }
                         ok = session.run(steps, minerKey)
                     }
                     ok
                 }
-                held?.let { trySend(it) }
+                if (!retried.get()) held.get()?.let { trySend(it) }
                 // A session that returned false already reported why; only a real timeout is one.
                 if (outcome == null) {
                     trySend(ProvisionEvent.Failed("Provisioning timed out"))
@@ -233,6 +254,9 @@ class BleProvisioner @Inject constructor(
         /** Set once the wallet write (the commit) succeeded; a disconnect after it is a handoff. */
         @Volatile private var committed = false
         @Volatile private var lastState: ProvState? = null
+
+        /** Set while the board's verdict on a `09` write is awaited (PROTOCOL.md 11.9). */
+        @Volatile private var keyVerdictPending = false
 
         /**
          * ATT MTU actually in force. 23 is the BLE default every connection starts at, and it is
@@ -315,6 +339,14 @@ class BleProvisioner @Inject constructor(
                     Log.w(TAG, "ignoring unrecognised status payload (${value.size} bytes)")
                     return
                 }
+                // The board re-sends its current status after it staged a key. An Error it already sat in
+                // (6 "key needed" after an attempt without the key) is not a verdict on the key and is
+                // reset by the SSID write: neither shown nor terminal. Only 7/8 refuse the key.
+                if (keyVerdictPending && decoded.state == ProvState.ERROR &&
+                    decoded.error != ProvError.BAD_KEY && decoded.error != ProvError.KEY_LOCKED
+                ) {
+                    return
+                }
                 lastState = decoded.state
                 emit(ProvisionEvent.StatusUpdate(decoded))
                 if (decoded.state == ProvState.CONNECTED ||
@@ -379,7 +411,7 @@ class BleProvisioner @Inject constructor(
 
             // PROTOCOL.md 11.1/11.8: only the owner's key is ever written to `09`, never the
             // board's own; and a running board in an API-side error ignores 01/02/03 over an
-            // unencrypted link (only a `09` write, which pairs, encrypts it), so with no key to
+            // unencrypted link (only a session that pairs for its `09` write has an encrypted one, 11.9), so with no key to
             // write the session stops here and says why instead of writing into the void.
             val keySteps = when (val plan = KeyTransportPolicy.planKeySteps(ownerKey, caps)) {
                 is KeyPlan.Stop -> {
@@ -389,15 +421,29 @@ class BleProvisioner @Inject constructor(
                 is KeyPlan.Write -> listOf(WriteStep(FryGattContract.CHAR_MINER_KEY_WRITE, plan.key.toByteArray(Charsets.US_ASCII)))
                 KeyPlan.NoKeyStep -> emptyList()
             }
-            // Pair first: a `09` write that itself starts pairing can be lost (PAIRING_TIMEOUT_MS).
-            if (keySteps.isNotEmpty() && !pairForKeyWrite(device)) {
-                emit(ProvisionEvent.Failed("Pairing failed"))
-                return false
+            if (keySteps.isNotEmpty()) {
+                // PROTOCOL.md 11.9: only a board that reports "enc" checks the link before taking a key.
+                if (caps.enc == null) {
+                    emit(ProvisionEvent.Failed(KEY_WRITE_NEEDS_USB))
+                    return false
+                }
+                // Pair first: a `09` write that itself starts pairing can be lost (PAIRING_TIMEOUT_MS).
+                if (!pairForKeyWrite(device)) {
+                    emit(ProvisionEvent.Failed("Pairing failed"))
+                    return false
+                }
+                // Proof, not inference: the board itself must see the link encrypted before the key goes out.
+                val enc = readChar(FryGattContract.CHAR_DEVICE_STATUS)?.let { DeviceStatusJson.parse(it) }?.enc
+                if (enc != 1) {
+                    emit(ProvisionEvent.Failed(LINK_NOT_ENCRYPTED))
+                    return false
+                }
             }
 
             enableStatusNotifications()
 
             for (step in keySteps + steps) {
+                if (step.characteristic == FryGattContract.CHAR_MINER_KEY_WRITE) keyVerdictPending = true
                 val ok = writeChar(step.characteristic, step.value)
                 if (!ok) {
                     emit(ProvisionEvent.Failed("Write failed for characteristic ${step.characteristic}"))
@@ -405,6 +451,7 @@ class BleProvisioner @Inject constructor(
                 }
                 if (step.characteristic == FryGattContract.CHAR_MINER_KEY_WRITE) {
                     delay(KEY_VERDICT_SETTLE_MS)
+                    keyVerdictPending = false
                     // The board refused the key (Error 7/8): stop here; writing the SSID would reset that error.
                     if (terminal.isCompleted) return true
                 }

@@ -67,6 +67,24 @@ class FakeGattBoard(
     var connects = 0
     private var connected = false
 
+    /** 0.4.1 boards append `"enc"` to `0A` for the reader's link (PROTOCOL.md 11.9); 0.4.0 does not. */
+    var reportsEnc = true
+
+    /** Whether the board sees this connection encrypted: paired in it, or connected with a bond it accepts. */
+    var linkEncrypted = false
+
+    /** `09` writes that went out on an unencrypted link (the key in the clear; the board ignores them). */
+    var cleartextKeyWrites = 0
+
+    /** Android encrypts a bonded link on connect (seen on the S22); false models a stack that does not. */
+    var encryptsBondedOnConnect = true
+
+    /** createBond() refuses outright (returns false). */
+    var createBondRefused = false
+
+    /** Status the board notifies right after a `09` write (the firmware re-sends its current status). */
+    var statusAfterKey: ByteArray? = null
+
     /** Every value the provisioner wrote, in order, simple and prepared writes alike. */
     val writes = mutableListOf<Pair<UUID, ByteArray>>()
 
@@ -93,7 +111,7 @@ class FakeGattBoard(
         for (u in all) {
             val c = mockk<BluetoothGattCharacteristic>(relaxed = true)
             every { c.uuid } returns u
-            every { c.value } answers { values[u] }
+            every { c.value } answers { if (u == FryGattContract.CHAR_DEVICE_STATUS) statusValue() else values[u] }
             every { c.setValue(any<ByteArray>()) } answers { staged[u] = firstArg(); true }
             chars[u] = c
         }
@@ -132,12 +150,14 @@ class FakeGattBoard(
                 startPairing()
                 return@answers true // never reaches the board, never reported
             }
+            if (u == FryGattContract.CHAR_MINER_KEY_WRITE && !linkEncrypted) cleartextKeyWrites++
             writes += u to staged.getValue(u)
             val prepared = inReliableWrite
             scope.launch {
                 delay(writeDelayMs[u] ?: 0L)
                 callback.onCharacteristicWrite(gatt, c, BluetoothGatt.GATT_SUCCESS)
                 if (!prepared && u == FryGattContract.CHAR_WALLET) notifyStatus()
+                if (u == FryGattContract.CHAR_MINER_KEY_WRITE) statusAfterKey?.let { notifyStatus(it) }
             }
             true
         }
@@ -159,6 +179,7 @@ class FakeGattBoard(
             val cb: BluetoothGattCallback = thirdArg()
             callback = cb
             connected = true
+            linkEncrypted = encryptsBondedOnConnect && bondState == BluetoothDevice.BOND_BONDED && !staleBond
             cb.onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
             if (staleBond && bondState == BluetoothDevice.BOND_BONDED) {
                 staleBond = false
@@ -174,8 +195,8 @@ class FakeGattBoard(
         every { device.bondState } answers { bondState }
         every { device.createBond() } answers {
             createBondCalls++
-            startPairing()
-            true
+            if (!createBondRefused) startPairing()
+            !createBondRefused
         }
         val adapter = mockk<BluetoothAdapter>()
         every { adapter.getRemoteDevice(any<String>()) } returns device
@@ -189,11 +210,18 @@ class FakeGattBoard(
         scope.launch {
             delay(pairDelayMs)
             bondState = if (pairingDeclined) BluetoothDevice.BOND_NONE else BluetoothDevice.BOND_BONDED
+            if (!pairingDeclined) linkEncrypted = true
         }
     }
 
-    private fun notifyStatus() {
-        values[FryGattContract.CHAR_STATUS] = statusAfterWallet
+    private fun statusValue(): ByteArray? {
+        val json = values[FryGattContract.CHAR_DEVICE_STATUS]?.toString(Charsets.UTF_8) ?: return null
+        if (!reportsEnc || !json.endsWith("}")) return json.toByteArray()
+        return (json.dropLast(1) + ",\"enc\":${if (linkEncrypted) 1 else 0}}").toByteArray()
+    }
+
+    private fun notifyStatus(status: ByteArray = statusAfterWallet) {
+        values[FryGattContract.CHAR_STATUS] = status
         callback.onCharacteristicChanged(gatt, chars.getValue(FryGattContract.CHAR_STATUS))
     }
 }

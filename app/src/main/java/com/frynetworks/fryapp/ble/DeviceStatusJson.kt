@@ -32,6 +32,7 @@ object DeviceStatusJson {
             ota = obj.str("ota"),
             state = obj.int("s"),
             detail = obj.int("d"),
+            enc = obj.int("enc"),
         )
     }
 

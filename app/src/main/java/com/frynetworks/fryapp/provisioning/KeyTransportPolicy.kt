@@ -13,6 +13,8 @@ data class DeviceCapabilities(
     /** `0A` `"s"` and `"d"`: the board's current state and error detail; null when not reported. */
     val state: Int? = null,
     val detail: Int? = null,
+    /** `0A` `"enc"` (PROTOCOL.md 11.9): 1 when the reader's link is encrypted; null before firmware 0.4.1. */
+    val enc: Int? = null,
 ) {
     val keyWrite: Boolean get() = proto >= 2 && CAP_KEY_WRITE in caps
     val errorReset: Boolean get() = proto >= 2 && CAP_ERROR_RESET in caps
@@ -73,7 +75,7 @@ object KeyTransportPolicy {
     /**
      * True when a v1.1 board sits in an API-side error and no owner key is about to be written:
      * over the unencrypted link the Wi-Fi settings would be ignored (11.8), so the user has to
-     * enter the FEM- key first (its `09` write pairs the link and the board starts a new attempt).
+     * enter the FEM- key first (the session pairs before its `09` write, and the board starts a new attempt; PROTOCOL.md 11.9).
      */
     fun keyNeededBeforeWrite(caps: DeviceCapabilities, ownerKey: String?): Boolean =
         ownerKey == null && caps.proto >= 2 && caps.state == STATE_ERROR && caps.detail in API_SIDE_ERRORS

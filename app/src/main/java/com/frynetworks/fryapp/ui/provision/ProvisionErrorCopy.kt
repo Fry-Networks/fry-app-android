@@ -1,5 +1,7 @@
 package com.frynetworks.fryapp.ui.provision
 
+import com.frynetworks.fryapp.ble.KEY_WRITE_NEEDS_USB
+import com.frynetworks.fryapp.ble.LINK_NOT_ENCRYPTED
 import com.frynetworks.fryapp.ble.ProvError
 import com.frynetworks.fryapp.wifi.SOFTAP_NEEDS_ANDROID_10
 
@@ -80,6 +82,10 @@ object ProvisionErrorCopy {
             "The board did not accept the settings. Move the phone closer and try again."
         reason.startsWith("GATT disconnected") ->
             "The Bluetooth connection dropped before the settings were sent. Move the phone closer and try again."
+        reason == KEY_WRITE_NEEDS_USB ->
+            "This board's firmware is too old to take a miner key over Bluetooth. Set the key with the USB web setup page, or install the latest firmware from the web flasher first."
+        reason == LINK_NOT_ENCRYPTED ->
+            "The phone paired but the board does not see an encrypted link, so the miner key was not sent. In Bluetooth settings, forget the FRY- board, then try again."
         reason == "Pairing failed" ->
             "The phone did not pair with the board, so the miner key was not sent. Tap Pair when Android asks, keep the phone within 2 metres, and try again."
         reason == "Provisioning timed out" ->
