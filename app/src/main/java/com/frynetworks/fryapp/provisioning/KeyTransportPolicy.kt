@@ -65,6 +65,9 @@ object KeyTransportPolicy {
      * writes: the API-side ones (4, 6, 9-13) and a key refusal (7, 8) raised after the join.
      */
     val API_SIDE_ERRORS = setOf(4, 6, 7, 8, 9, 10, 11, 12, 13)
+
+    /** Of those, the ones the board recovers from by itself (it keeps retrying): its own copy applies, not "key needed". */
+    val SELF_HEALING_ERRORS = setOf(4, 13)
     private const val STATE_ERROR = 4
 
     /**
@@ -80,7 +83,9 @@ object KeyTransportPolicy {
      * entered, C-1 valid) can ever be written; the board's own `05` value is never a candidate.
      */
     fun planKeySteps(ownerKey: String?, caps: DeviceCapabilities): KeyPlan = when {
-        keyNeededBeforeWrite(caps, ownerKey) -> KeyPlan.Stop(ProvError.KEY_REQUIRED)
+        keyNeededBeforeWrite(caps, ownerKey) -> KeyPlan.Stop(
+            if (caps.detail in SELF_HEALING_ERRORS) ProvError.fromCode(caps.detail!!) else ProvError.KEY_REQUIRED,
+        )
         ownerKey != null && forBle(caps) == KeyTransport.Send -> KeyPlan.Write(ownerKey)
         else -> KeyPlan.NoKeyStep
     }

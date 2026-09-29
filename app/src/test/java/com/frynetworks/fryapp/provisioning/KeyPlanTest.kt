@@ -40,6 +40,13 @@ class KeyPlanTest {
     }
 
     @Test
+    fun `a board still retrying registration or unreachable keeps its own error`() {
+        assertEquals(KeyPlan.Stop(ProvError.HARDWAREAPI_REGISTRATION_FAILED), KeyTransportPolicy.planKeySteps(null, v11(s = 4, d = 4)))
+        assertEquals(KeyPlan.Stop(ProvError.UNREACHABLE), KeyTransportPolicy.planKeySteps(null, v11(s = 4, d = 13)))
+        assertEquals(setOf(4, 13), KeyTransportPolicy.SELF_HEALING_ERRORS)
+    }
+
+    @Test
     fun `a Wi-Fi error or a board that is not in Error writes as usual`() {
         assertEquals(KeyPlan.NoKeyStep, KeyTransportPolicy.planKeySteps(null, v11(s = 4, d = 2)))
         assertEquals(KeyPlan.NoKeyStep, KeyTransportPolicy.planKeySteps(null, v11(s = 3, d = 9)))

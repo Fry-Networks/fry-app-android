@@ -77,6 +77,16 @@ class BleKeyStepTest {
     }
 
     @Test
+    fun `a board still retrying registration or unreachable keeps its own error instead of asking for a key`() = runTest {
+        for ((d, error) in listOf(4 to ProvError.HARDWAREAPI_REGISTRATION_FAILED, 13 to ProvError.UNREACHABLE)) {
+            val board = board(v11(s = 4, d = d))
+            val events = session(board, null)
+            assertTrue("detail $d: ${board.writes}", board.writes.isEmpty())
+            assertEquals("detail $d", ProvStatus(ProvState.ERROR, error), events.lastStatus())
+        }
+    }
+
+    @Test
     fun `with an owner key the same board is written to, key first, so the link pairs`() = runTest {
         val board = board(v11(s = 4, d = 9))
         val events = session(board, ownerKey)
