@@ -19,6 +19,7 @@ import com.frynetworks.fryapp.network.dashboard.ServerClock
 import com.frynetworks.fryapp.ui.common.ErrorCopy
 import com.frynetworks.fryapp.ui.common.TimeFormat
 import com.frynetworks.fryapp.ui.common.errorCode
+import com.frynetworks.fryapp.update.InstallInhibitor
 import com.frynetworks.fryapp.wallet.BridgeErrorCode
 import com.frynetworks.fryapp.wallet.BridgeEvent
 import com.frynetworks.fryapp.wallet.BridgeException
@@ -130,6 +131,8 @@ class ClaimViewModel(
     private val openUri: (String) -> Unit,
     private val pollDelayMillis: Long = CUSTODIAL_POLL_DELAY_MILLIS,
     private val optInRetryDelayMillis: Long = OPT_IN_RETRY_DELAY_MILLIS,
+    /** Held from the first signature to the dashboard's confirm: an app update then would orphan an on-chain payment. */
+    private val inhibitor: InstallInhibitor? = null,
 ) : ViewModel() {
 
     @Inject
@@ -141,7 +144,8 @@ class ClaimViewModel(
         session: SessionRepository,
         clock: ServerClock,
         launcher: ExternalUriLauncher,
-    ) : this(rewards, algod, miners, bridge, session, clock, openUri = { uri -> launcher.open(uri, null) })
+        inhibitor: InstallInhibitor,
+    ) : this(rewards, algod, miners, bridge, session, clock, openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor)
 
     private val ui = MutableStateFlow(ClaimUiState())
     val uiState: StateFlow<ClaimUiState> = ui.asStateFlow()
@@ -176,14 +180,24 @@ class ClaimViewModel(
     fun optIn() {
         if (ui.value.state !is ClaimState.OptInRequired) return
         job?.cancel()
-        job = viewModelScope.launch { runOptIn() }
+        job = viewModelScope.launch { holdingInstalls { runOptIn() } }
     }
 
     /** `claim_confirm` on the Preview step. */
     fun confirm() {
         if (!ui.value.canConfirm) return
         job?.cancel()
-        job = viewModelScope.launch { runClaim() }
+        job = viewModelScope.launch { holdingInstalls { runClaim() } }
+    }
+
+    /** A signed chain transaction may be in flight: no app update may replace the process meanwhile. */
+    private suspend fun holdingInstalls(block: suspend () -> Unit) {
+        inhibitor?.acquire()
+        try {
+            block()
+        } finally {
+            inhibitor?.release()
+        }
     }
 
     /** `claim_cancel`: disabled during PayingFee/AwaitingSignature/Confirming (Claim.tsx:631 parity). */

@@ -24,6 +24,7 @@ import com.frynetworks.fryapp.network.dashboard.JsJson
 import com.frynetworks.fryapp.network.dashboard.ServerClock
 import com.frynetworks.fryapp.ui.common.ErrorCopy
 import com.frynetworks.fryapp.ui.common.errorCode
+import com.frynetworks.fryapp.update.InstallInhibitor
 import com.frynetworks.fryapp.ui.miners.claim.StageStatus
 import com.frynetworks.fryapp.wallet.BridgeErrorCode
 import com.frynetworks.fryapp.wallet.BridgeEvent
@@ -132,6 +133,8 @@ class StakeViewModel(
     private val session: SessionRepository,
     private val clock: ServerClock,
     private val openUri: (String) -> Unit,
+    /** Held from the first signature to the dashboard record: an app update then would orphan an on-chain transfer. */
+    private val inhibitor: InstallInhibitor? = null,
 ) : ViewModel() {
 
     @Inject
@@ -144,7 +147,8 @@ class StakeViewModel(
         session: SessionRepository,
         clock: ServerClock,
         launcher: ExternalUriLauncher,
-    ) : this(miners, rewards, stakes, algod, bridge, session, clock, openUri = { uri -> launcher.open(uri, null) })
+        inhibitor: InstallInhibitor,
+    ) : this(miners, rewards, stakes, algod, bridge, session, clock, openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor)
 
     private val ui = MutableStateFlow(StakeUiState())
     val uiState: StateFlow<StakeUiState> = ui.asStateFlow()
@@ -181,14 +185,24 @@ class StakeViewModel(
     fun confirm() {
         if (!ui.value.canConfirm) return
         job?.cancel()
-        job = viewModelScope.launch { runBalances() }
+        job = viewModelScope.launch { holdingInstalls { runBalances() } }
     }
 
     /** `stake_optin`. */
     fun optIn() {
         if (ui.value.state !is StakeState.OptInRequired) return
         job?.cancel()
-        job = viewModelScope.launch { runOptIn() }
+        job = viewModelScope.launch { holdingInstalls { runOptIn() } }
+    }
+
+    /** A signed chain transaction may be in flight: no app update may replace the process meanwhile. */
+    private suspend fun holdingInstalls(block: suspend () -> Unit) {
+        inhibitor?.acquire()
+        try {
+            block()
+        } finally {
+            inhibitor?.release()
+        }
     }
 
     fun cancel() {

@@ -3,6 +3,7 @@ package com.frynetworks.fryapp.di
 import android.content.Context
 import com.frynetworks.fryapp.BuildConfig
 import com.frynetworks.fryapp.update.AndroidUpdateSources
+import com.frynetworks.fryapp.update.ForegroundTracker
 import com.frynetworks.fryapp.update.InstallInhibitor
 import com.frynetworks.fryapp.update.UpdateCoordinator
 import com.frynetworks.fryapp.update.UpdatePrefs
@@ -28,11 +29,13 @@ object UpdateModule {
         @ApplicationContext context: Context,
         prefs: UpdatePrefs,
         inhibitor: InstallInhibitor,
+        foreground: ForegroundTracker,
     ): UpdateCoordinator = UpdateCoordinator(
         installedPackage = context.packageName,
         installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
         sources = AndroidUpdateSources(context),
         store = prefs,
         inhibited = { inhibitor.inhibited },
+        foreground = { foreground.resumed },
     )
 }

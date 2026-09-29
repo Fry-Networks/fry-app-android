@@ -40,7 +40,9 @@ interface UpdateSources {
  * One update pass: manifest (fixed channel URL) → [VersionPolicy] → download (size + SHA-256)
  * → [SignerPolicy] → PackageInstaller session. Any failed check stops the pass before an install
  * session exists. One pass at a time; a launch check runs at most every [LAUNCH_THROTTLE_MS];
- * nothing installs while [InstallInhibitor] is held (provisioning in progress).
+ * nothing installs while [InstallInhibitor] is held (a board setup or a signed chain transaction
+ * in flight), and an unattended pass (launch, daily) never installs while the app is on screen
+ * ([foreground]); only the user's own "Check for updates" may.
  */
 class UpdateCoordinator(
     private val installedPackage: String,
@@ -49,6 +51,7 @@ class UpdateCoordinator(
     private val store: UpdateStore,
     private val inhibited: () -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val foreground: () -> Boolean = { false },
 ) {
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
@@ -64,14 +67,21 @@ class UpdateCoordinator(
         try {
             store.lastCheckMillis = clock()
             _state.value = UpdateState.Checking
-            _state.value = pass()
+            _state.value = pass(trigger)
         } finally {
             running.set(false)
         }
         return _state.value
     }
 
-    private fun pass(): UpdateState {
+    /** Why this pass must not install right now, if anything. */
+    private fun deferred(trigger: UpdateTrigger, offer: UpdateManifest): UpdateState? = when {
+        inhibited() -> UpdateState.Deferred(offer.versionName, DEFERRED_PROVISIONING)
+        trigger != UpdateTrigger.MANUAL && foreground() -> UpdateState.Deferred(offer.versionName, DEFERRED_IN_USE)
+        else -> null
+    }
+
+    private fun pass(trigger: UpdateTrigger): UpdateState {
         val channel = sources.channel()
         val manifest = when (val parsed = UpdateManifestParser.parse(sources.manifestText(channel), channel)) {
             is ManifestParse.Ok -> parsed.manifest
@@ -82,7 +92,7 @@ class UpdateCoordinator(
             is UpdateDecision.Rejected -> return UpdateState.NotApplicable(decision.reason)
             is UpdateDecision.Offer -> decision.manifest
         }
-        if (inhibited()) return UpdateState.Deferred(offer.versionName, DEFERRED_PROVISIONING)
+        deferred(trigger, offer)?.let { return it }
         _state.value = UpdateState.Downloading(offer.versionName)
         val apk = when (val result = sources.download(offer)) {
             is DownloadResult.Ok -> result.file
@@ -93,8 +103,8 @@ class UpdateCoordinator(
             apk.delete()
             return UpdateState.Failed("Update refused: ${verdict.reason}.")
         }
-        // Provisioning may have started while the APK downloaded.
-        if (inhibited()) return UpdateState.Deferred(offer.versionName, DEFERRED_PROVISIONING)
+        // Provisioning, a transaction or the user's return may have started while the APK downloaded.
+        deferred(trigger, offer)?.let { return it }
         return if (sources.install(apk, installedPackage)) {
             UpdateState.Installing(offer.versionName)
         } else {
@@ -105,5 +115,6 @@ class UpdateCoordinator(
     companion object {
         const val LAUNCH_THROTTLE_MS = 6L * 60 * 60 * 1000
         const val DEFERRED_PROVISIONING = "waiting until board setup finishes"
+        const val DEFERRED_IN_USE = "waiting until the app is not in use"
     }
 }
