@@ -78,6 +78,10 @@ jobs:
             test) CHANNEL=test; NAME="$BASE" ;;
           esac
           CODE="${INPUT_CODE:-}"
+          if [ -z "$CODE" ]; then
+            # actions/checkout stores a pushed tag as a lightweight ref (no message); fetch the annotated tag object itself.
+            git fetch --force --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG" >/dev/null 2>&1 || true
+          fi
           if [ -z "$CODE" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             CODE=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed -n 's/^versionCode:[[:space:]]*\([0-9]\+\)[[:space:]]*$/\1/p' | head -1)
           fi
