@@ -116,13 +116,27 @@ class UpdateInstallGateTest {
     }
 
     @Test
-    fun `a claim that fails or is cancelled releases the inhibitor too`() = runTest {
+    fun `a rejected signature releases the inhibitor`() = runTest {
         val fake = FakeWalletBridge().apply { reconnectAddress = TEST_ADDRESS; signBehaviour = listOf(FakeWalletBridge.SignBehaviour.Reject) }
         val vm = claimViewModel(fake)
         vm.start(key)
         vm.confirm()
         assertTrue("${vm.uiState.value.state}", vm.uiState.value.state is ClaimState.Failed)
         assertFalse(inhibitor.inhibited)
+    }
+
+    @Test
+    fun `cancelling the claim job while the transaction is in flight releases the inhibitor`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val fake = FakeWalletBridge().apply { reconnectAddress = TEST_ADDRESS }
+        val vm = claimViewModel(GatedBridge(fake, gate))
+        vm.start(key)
+        vm.confirm() // suspended inside submit, holding the inhibitor
+        assertTrue(inhibitor.inhibited)
+
+        vm.start(key) // cancels the in-flight job before starting over
+        assertFalse("released by the cancelled job's finally", inhibitor.inhibited)
+        assertEquals(UpdateState.Installing("0.4.1-rc.1"), coordinator.check(UpdateTrigger.MANUAL))
     }
 
     @Test
