@@ -30,8 +30,19 @@ import java.io.File
  * masked to 6 characters and no passwords.
  */
 object Qa {
-    const val PERMISSION_CONTROLLER = "com.android.permissioncontroller"
-    val INSTALLERS = listOf("com.google.android.packageinstaller", "com.android.packageinstaller")
+    /** The packages that may serve the runtime-permission dialog (AOSP, Mainline, One UI). */
+    val PERMISSION_CONTROLLERS = listOf(
+        "com.android.permissioncontroller",
+        "com.google.android.permissioncontroller",
+        "com.samsung.android.permissioncontroller",
+    )
+
+    /** The packages that may serve the install prompt (AOSP, Google, One UI). */
+    val INSTALLERS = listOf(
+        "com.google.android.packageinstaller",
+        "com.android.packageinstaller",
+        "com.samsung.android.packageinstaller",
+    )
     private const val SETTINGS = "com.android.settings"
 
     val instrumentation get() = InstrumentationRegistry.getInstrumentation()
@@ -119,23 +130,36 @@ object Qa {
         }
     }
 
+    /** The first of [selectors] on screen within [timeoutMs], polling, or null; never blocks per selector. */
+    private fun waitForAny(selectors: List<BySelector>, timeoutMs: Long): UiObject2? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            selectors.firstNotNullOfOrNull { device.findObject(it) }?.let { return it }
+            if (System.currentTimeMillis() >= deadline) return null
+            Thread.sleep(250)
+        }
+    }
+
     /**
      * Answers Android's runtime permission dialogs positively, by the permission controller's
-     * resource ids (with the visible button text as fallback), inside the permission controller
-     * only. Returns how many were answered.
+     * resource ids (with the visible button text as fallback), inside one of the
+     * [PERMISSION_CONTROLLERS] only. Returns how many were answered.
      */
     fun allowPermissionDialogs(maxDialogs: Int = 6, timeoutMs: Long = 4_000): Int {
-        val allow = listOf(
-            By.pkg(PERMISSION_CONTROLLER).res("$PERMISSION_CONTROLLER:id/permission_allow_foreground_only_button"),
-            By.pkg(PERMISSION_CONTROLLER).res("$PERMISSION_CONTROLLER:id/permission_allow_button"),
-            By.pkg(PERMISSION_CONTROLLER).text("While using the app"),
-            By.pkg(PERMISSION_CONTROLLER).text("Allow"),
-        )
+        val allow = PERMISSION_CONTROLLERS.flatMap { p ->
+            listOf(
+                By.pkg(p).res("$p:id/permission_allow_foreground_only_button"),
+                By.pkg(p).res("$p:id/permission_allow_button"),
+                By.pkg(p).text("While using the app"),
+                By.pkg(p).text("Allow"),
+            )
+        }
+        val fineLocation = PERMISSION_CONTROLLERS.map { p -> By.pkg(p).res("$p:id/permission_location_accuracy_radio_fine") }
         var answered = 0
         repeat(maxDialogs) {
             // Android 12+ asks precise vs approximate first: BLE scanning needs precise.
-            device.findObject(By.pkg(PERMISSION_CONTROLLER).res("$PERMISSION_CONTROLLER:id/permission_location_accuracy_radio_fine"))?.click()
-            val button = allow.firstNotNullOfOrNull { device.wait(Until.findObject(it), if (answered == 0) timeoutMs else 1_500) } ?: return answered
+            fineLocation.firstNotNullOfOrNull { device.findObject(it) }?.click()
+            val button = waitForAny(allow, if (answered == 0) timeoutMs else 1_500) ?: return answered
             button.click()
             answered++
             device.waitForIdle()
