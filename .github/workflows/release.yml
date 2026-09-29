@@ -55,6 +55,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The runner's cmdline-tools no longer ship the legacy 'tools' package (the action's default),
+          # which makes sdkmanager exit 1; the preinstalled platforms and build-tools are all this job needs.
+          packages: 'platform-tools'
 
       - name: Resolve tag, channel and version
         id: v
