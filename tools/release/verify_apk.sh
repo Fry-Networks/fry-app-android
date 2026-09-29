@@ -29,8 +29,11 @@ if unzip -Z1 "$APK" | grep -qE '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then fail "v
 grep -q '^Verified using v2 scheme (APK Signature Scheme v2): true' <<<"$certs" || fail "not signed with scheme v2"
 grep -q '^Verified using v3 scheme (APK Signature Scheme v3): true' <<<"$certs" || fail "not signed with scheme v3"
 grep -q '^Number of signers: 1$' <<<"$certs" || fail "expected exactly one signer"
-if grep -q '^Signer #1 certificate DN: .*CN=Android Debug' <<<"$certs"; then fail "signed with an Android Debug certificate"; fi
-digest=$(sed -n 's/^Signer #1 certificate SHA-256 digest: \([0-9a-fA-F]*\)$/\1/p' <<<"$certs" | tr 'A-F' 'a-f')
+# Newer apksigner prints v3 signers as "Signer (minSdkVersion=…, maxSdkVersion=…) certificate …" instead of "Signer #1 …".
+if grep -qE '^Signer (#1|\([^)]*\)) certificate DN: .*CN=Android Debug' <<<"$certs"; then fail "signed with an Android Debug certificate"; fi
+digests=$(sed -nE 's/^Signer (#1|\([^)]*\)) certificate SHA-256 digest: ([0-9a-fA-F]+)$/\2/p' <<<"$certs" | tr 'A-F' 'a-f' | sort -u)
+[ "$(grep -c . <<<"$digests")" = 1 ] || fail "expected one signer certificate digest, got: $(tr '\n' ' ' <<<"${digests:-none}")"
+digest=$digests
 [ "$digest" = "$PIN" ] || fail "signer certificate SHA-256 ${digest:-none} is not the pinned $PIN"
 
 badging=$("$BT/aapt2" dump badging "$APK" 2>&1) || fail "aapt2 could not read the APK"
