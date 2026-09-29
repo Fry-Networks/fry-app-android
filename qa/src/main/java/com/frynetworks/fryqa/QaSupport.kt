@@ -169,9 +169,12 @@ object Qa {
 
     /**
      * The one Settings interaction allowed: the "Pair" button of Android's Bluetooth pairing
-     * consent, which the first encrypted `09` write raises on many phones. Returns true if pressed.
+     * consent, which the first encrypted `09` write raises on many phones - and only when that
+     * consent names a Fry board ("FRY-..."), never a pairing request for any other device.
+     * Returns true if pressed.
      */
     fun acceptPairingConsent(): Boolean {
+        if (!device.hasObject(By.pkg(SETTINGS).textContains("FRY-"))) return false
         val pair = device.findObject(By.pkg(SETTINGS).text("Pair")) ?: return false
         pair.click()
         device.waitForIdle()
