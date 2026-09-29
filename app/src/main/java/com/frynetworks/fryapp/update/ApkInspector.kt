@@ -14,37 +14,56 @@ import java.security.MessageDigest
 class ApkInspector(private val context: Context) {
 
     fun installed(): SignerFacts? = runCatching {
-        facts(packageInfo { pm, flags -> pm.getPackageInfo(context.packageName, flags) })
+        facts(packageInfo(archive = false) { pm, flags -> pm.getPackageInfo(context.packageName, flags) })
     }.getOrNull()
 
     fun candidate(apk: File): SignerFacts? = runCatching {
-        facts(packageInfo { pm, flags -> pm.getPackageArchiveInfo(apk.absolutePath, flags) })
+        facts(packageInfo(archive = true) { pm, flags -> pm.getPackageArchiveInfo(apk.absolutePath, flags) })
     }.getOrNull()
 
-    @Suppress("DEPRECATION")
     @SuppressLint("PackageManagerGetSignatures")
-    private fun packageInfo(get: (PackageManager, Int) -> PackageInfo?): PackageInfo? {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
-        return get(context.packageManager, flags)
-    }
+    private fun packageInfo(archive: Boolean, get: (PackageManager, Int) -> PackageInfo?): PackageInfo? =
+        get(context.packageManager, signatureFlags(Build.VERSION.SDK_INT, archive))
 
-    @Suppress("DEPRECATION")
-    private fun facts(info: PackageInfo?): SignerFacts? {
-        info ?: return null
-        val (current, lineage) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    companion object {
+        /**
+         * `getPackageArchiveInfo` honours GET_SIGNING_CERTIFICATES only from API 29: on API 28 the
+         * archive call must also ask for the legacy GET_SIGNATURES or it reports no signer at all,
+         * and the update is refused for good (fail-closed, but never updating on Android 9).
+         */
+        @Suppress("DEPRECATION")
+        @SuppressLint("InlinedApi")
+        internal fun signatureFlags(sdkInt: Int, archive: Boolean): Int = when {
+            sdkInt >= Build.VERSION_CODES.Q -> PackageManager.GET_SIGNING_CERTIFICATES
+            sdkInt == Build.VERSION_CODES.P ->
+                if (archive) PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES else PackageManager.GET_SIGNING_CERTIFICATES
+            else -> PackageManager.GET_SIGNATURES
+        }
+
+        /** `signingInfo` when the platform filled it in, else the legacy `signatures` (below P, and an API 28 archive). */
+        internal fun facts(info: PackageInfo?): SignerFacts? {
+            info ?: return null
+            val (current, lineage) = modernSigners(info) ?: legacySigners(info)
+            return SignerFacts(info.packageName, PackageInfoCompat.getLongVersionCode(info), current, lineage)
+        }
+
+        /** The v3 signing facts on P+, or null when the platform left `signingInfo` empty. */
+        private fun modernSigners(info: PackageInfo): Pair<Set<String>, Set<String>>? {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
             val signing = info.signingInfo ?: return null
-            if (signing.hasMultipleSigners()) {
+            return if (signing.hasMultipleSigners()) {
                 signing.apkContentsSigners.map { it.sha256() }.toSet() to emptySet()
             } else {
                 val history = signing.signingCertificateHistory.orEmpty().map { it.sha256() }
                 setOfNotNull(history.lastOrNull()) to history.toSet()
             }
-        } else {
-            info.signatures.orEmpty().map { it.sha256() }.toSet() to emptySet()
         }
-        return SignerFacts(info.packageName, PackageInfoCompat.getLongVersionCode(info), current, lineage)
-    }
 
-    private fun Signature.sha256(): String =
-        MessageDigest.getInstance("SHA-256").digest(toByteArray()).joinToString("") { "%02x".format(it) }
+        @Suppress("DEPRECATION")
+        private fun legacySigners(info: PackageInfo): Pair<Set<String>, Set<String>> =
+            info.signatures.orEmpty().map { it.sha256() }.toSet() to emptySet()
+
+        private fun Signature.sha256(): String =
+            MessageDigest.getInstance("SHA-256").digest(toByteArray()).joinToString("") { "%02x".format(it) }
+    }
 }
