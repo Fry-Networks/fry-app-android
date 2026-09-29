@@ -116,7 +116,7 @@ fun ProvisionScreen(
                 is ProvisionUiState.Idle -> ""
                 is ProvisionUiState.InProgress -> current.message
                 is ProvisionUiState.Success -> "Connected"
-                is ProvisionUiState.Error -> "Error: ${current.reason}"
+                is ProvisionUiState.Error -> ProvisionErrorCopy.statusLine(current.reason)
                 is ProvisionUiState.Handoff -> current.message
             }
             Text(

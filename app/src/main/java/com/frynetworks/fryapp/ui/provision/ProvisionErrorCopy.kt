@@ -16,6 +16,37 @@ object ProvisionErrorCopy {
      */
     const val LATCHED_HINT = "The board stays in this error until it restarts: unplug it for 5 seconds, plug it back in, then set it up again."
 
+    /** Headline when the body did not come from [forError] (provisioner failures, unknown refusals). */
+    const val GENERIC_TITLE = "Setup failed"
+
+    /** A short headline for each device error; [forError] gives the body shown under it. */
+    fun title(error: ProvError): String = when (error) {
+        ProvError.NONE -> "Board reported an error"
+        ProvError.BAD_SSID -> "Wi-Fi network not found"
+        ProvError.WIFI_AUTH_FAILED -> "Wi-Fi password not accepted"
+        ProvError.NO_IP -> "No IP address from the router"
+        ProvError.HARDWAREAPI_REGISTRATION_FAILED -> "Registration not accepted yet"
+        ProvError.BAD_WALLET -> "Wallet address rejected"
+        ProvError.KEY_REQUIRED -> "Miner key needed"
+        ProvError.BAD_KEY -> "Miner key rejected"
+        ProvError.KEY_LOCKED -> "Miner key cannot be replaced"
+        ProvError.REG_UNAUTHORIZED -> "Miner key not recognised"
+        ProvError.REG_FORBIDDEN -> "Registration refused"
+        ProvError.REG_KEY_IN_USE -> "Miner key active elsewhere"
+        ProvError.REG_REJECTED -> "Registration rejected"
+        ProvError.UNREACHABLE -> "Fry not reachable"
+    }
+
+    /**
+     * The title for a stored error body: [ProvisionUiState.Error] carries only the text, so the
+     * screen finds the code by the body [forError] produced (with or without [LATCHED_HINT]).
+     */
+    fun titleFor(reason: String): String =
+        ProvError.entries.firstOrNull { reason.startsWith(forError(it, errorResetSupported = true)) }?.let(::title) ?: GENERIC_TITLE
+
+    /** What the provisioning status line shows for an error: the title, then the body. */
+    fun statusLine(reason: String): String = "Error: ${titleFor(reason)}\n$reason"
+
     fun forError(error: ProvError, errorResetSupported: Boolean = false): String {
         val text = when (error) {
             ProvError.NONE -> "The board reported an error without a reason."
