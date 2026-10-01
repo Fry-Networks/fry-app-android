@@ -89,9 +89,14 @@ fun MinerActionsRow(
 internal val ACTION_MIN_HEIGHT = 48.dp
 private val ACTION_PADDING = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
 
+/**
+ * Fills the button's content width (centred) rather than wrapping the text: a wrap-width label's
+ * text layout is narrower than the width it was offered, which reports visual overflow at every
+ * font scale (IV2 I13, MinerActionsRowLayoutTest).
+ */
 @Composable
 private fun ActionLabel(text: String) {
-    Text(text, maxLines = 2, textAlign = TextAlign.Center, overflow = TextOverflow.Visible)
+    Text(text, modifier = Modifier.fillMaxWidth(), maxLines = 2, textAlign = TextAlign.Center, overflow = TextOverflow.Visible)
 }
 
 @Composable
