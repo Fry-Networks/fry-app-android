@@ -36,6 +36,13 @@ class BridgePageHarness {
     /** JSON of the connected session's peerMeta, or null when no session is stored. */
     var peerMeta: String? = null
 
+    /** Non-RPC scripts the bridge evaluated in the page (the session-peer query). */
+    val peerScripts = mutableListOf<String>()
+
+    /** When set, peer-query answers wait in [deferredPeerAnswers] (the page answers after other work). */
+    var deferPeerQuery = false
+    val deferredPeerAnswers = mutableListOf<() -> Unit>()
+
     /** Methods the page leaves unanswered until [reply] (connect while pairing, signTxns while the wallet decides). */
     var held = setOf("signTxns")
 
@@ -69,7 +76,9 @@ class BridgePageHarness {
 
     private fun page(script: String, callback: ValueCallback<String>?) {
         if (!script.startsWith(DISPATCH)) {
-            callback?.onReceiveValue(peerMeta ?: "null")
+            peerScripts += script
+            val answer = peerMeta ?: "null"
+            if (deferPeerQuery) deferredPeerAnswers += { callback?.onReceiveValue(answer) } else callback?.onReceiveValue(answer)
             return
         }
         val json = Gson().fromJson(script.removePrefix(DISPATCH).removeSuffix(");"), String::class.java)
