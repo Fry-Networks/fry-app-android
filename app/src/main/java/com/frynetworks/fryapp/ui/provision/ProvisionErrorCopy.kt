@@ -59,7 +59,7 @@ object ProvisionErrorCopy {
             ProvError.BAD_WALLET -> "The board rejected the wallet address. Paste the full 58-character Algorand address and try again."
             ProvError.KEY_REQUIRED -> "This board needs your miner key before it can be set up. Paste your FEM- key (Dashboard → Generate Free FEM Key) and try again."
             ProvError.BAD_KEY -> "The board rejected the miner key. It must be FEM- followed by 32 letters and digits, exactly as the dashboard shows it."
-            ProvError.KEY_LOCKED -> "This board already has a confirmed miner key and will not replace it over the air. To change the key, use the USB web setup."
+            ProvError.KEY_LOCKED -> "This board already has a confirmed miner key and will not replace it over the air. To change the key, see https://docs.frynetworks.com/docs/esp-miners.html#flash."
             ProvError.REG_UNAUTHORIZED -> "Fry does not recognise this miner key. Check it on the dashboard; IOT- keys are no longer accepted, use the FEM- key with the same 32 characters."
             ProvError.REG_FORBIDDEN -> "Fry refused this board's registration. The key may be registered to another wallet; check it on the dashboard."
             ProvError.REG_KEY_IN_USE -> "This miner key is already active on another install. Stop the other miner or use a different key; one key runs on one install at a time."
@@ -83,7 +83,7 @@ object ProvisionErrorCopy {
         reason.startsWith("GATT disconnected") ->
             "The Bluetooth connection dropped before the settings were sent. Move the phone closer and try again."
         reason == KEY_WRITE_NEEDS_USB ->
-            "This board's firmware is too old to take a miner key over Bluetooth. Set the key with the USB web setup page, or install the latest firmware from the web flasher first."
+            "This board's firmware is too old to take a miner key over Bluetooth. Update it to the latest firmware first: https://docs.frynetworks.com/docs/esp-miners.html#flash."
         reason == LINK_NOT_ENCRYPTED ->
             "The phone paired but the board does not see an encrypted link, so the miner key was not sent. In Bluetooth settings, forget the FRY- board, then try again."
         reason == "Pairing failed" ->
@@ -108,7 +108,7 @@ object ProvisionErrorCopy {
         "bad_key" -> forError(ProvError.BAD_KEY, errorResetSupported = true)
         "key_required" -> forError(ProvError.KEY_REQUIRED, errorResetSupported = true)
         "key_locked" -> forError(ProvError.KEY_LOCKED, errorResetSupported = true)
-        "key_needs_secure_ap" -> "This board only takes a miner key over its protected setup network. Restart it without a key set, or use the USB web setup."
+        "key_needs_secure_ap" -> "This board only takes a miner key over its protected setup network. Restart it without a key set and try again."
         "busy" -> "The board is still working on the previous attempt. Wait 30 seconds and try again."
         else -> "The board refused the settings (HTTP $httpCode). Restart it and try again."
     }

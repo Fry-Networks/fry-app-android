@@ -98,7 +98,7 @@ fun KeyStepSection(
             onValueChange = { onSetupCodeChange(it.trim().uppercase()) },
             label = { Text("Setup code (ESP8266 without a key)") },
             singleLine = true,
-            supportingText = { Text("8 characters, shown on the USB web setup page. Leave empty for a board that already has a key.") },
+            supportingText = { Text("8 characters. Leave empty for a board that already has a key.") },
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("prov_setup_code")
