@@ -28,12 +28,14 @@ import com.frynetworks.fryapp.wallet.WalletAccount
 import com.frynetworks.fryapp.wallet.WalletBridge
 import com.frynetworks.fryapp.wallet.WalletVendor
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.withTimeout
+import java.net.URI
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -43,7 +45,7 @@ import javax.inject.Singleton
  * The invisible signing bridge: one WebView (application context, attached by [BridgeHost]) that
  * loads `assets/bridge/bridge.html` through [WebViewAssetLoader] on an https origin and runs the
  * official Pera/Defly SDKs. Kotlin talks JSON-RPC to it ([BridgeProtocol]); wallet deep links the
- * page would `window.open` are routed to [ExternalUriLauncher] instead.
+ * page would `window.open` are routed to [ExternalUriLauncher] instead (see [launch] for which).
  *
  * The WebView never navigates anywhere else, never sees the dashboard cookies (those live in the
  * OkHttp jar) and exposes only three `@JavascriptInterface` methods that carry no secrets.
@@ -56,6 +58,8 @@ class WalletBridgeWebView @Inject constructor(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonObject?>>()
+    /** Ids of the `signTxns` calls in flight: a wallet is opened for a sign redirect only while one is. */
+    private val signing = ConcurrentHashMap.newKeySet<String>()
     private val _events = MutableSharedFlow<BridgeEvent>(extraBufferCapacity = 32)
     override val events: Flow<BridgeEvent> = _events
 
@@ -98,8 +102,7 @@ class WalletBridgeWebView @Inject constructor(
                 val url = request.url
                 val scheme = url.scheme?.lowercase()
                 if (scheme != "http" && scheme != "https") {
-                    uriLauncher.open(url.toString(), currentVendor)
-                    _events.tryEmit(BridgeEvent.OpenUri(url.toString(), currentVendor))
+                    launch(BridgeEvent.OpenUri(url.toString(), currentVendor))
                     return true
                 }
                 // Only the bridge page itself may load; everything else is blocked.
@@ -155,8 +158,8 @@ class WalletBridgeWebView @Inject constructor(
                     if (m.event is BridgeEvent.Ready) {
                         if (!ready.isCompleted) ready.complete(Unit)
                     }
-                    if (m.event is BridgeEvent.OpenUri) uriLauncher.open(m.event.uri, m.event.vendor ?: currentVendor)
-                    _events.tryEmit(m.event)
+                    if (m.event is BridgeEvent.OpenUri) launch(m.event, m.event.vendor ?: currentVendor)
+                    else _events.tryEmit(m.event)
                 }
                 null -> Log.w(TAG, "ignoring unrecognised bridge message")
             }
@@ -164,14 +167,50 @@ class WalletBridgeWebView @Inject constructor(
 
         @JavascriptInterface
         fun openUri(uri: String) {
-            uriLauncher.open(uri, currentVendor)
-            _events.tryEmit(BridgeEvent.OpenUri(uri, currentVendor))
+            launch(BridgeEvent.OpenUri(uri, currentVendor))
         }
 
         @JavascriptInterface
         fun log(level: String, message: String) {
             if (BuildConfig.DEBUG) Log.d(TAG, "[$level] $message")
         }
+    }
+
+    /**
+     * Hands a wallet deep link from the page to [uriLauncher] and reports it as [event] (OD-35).
+     * Pairing (`wc:`) and http(s) links go through as they always did. A sign redirect
+     * (`perawallet-wc://`, `defly-wc://`, …) is a bare scheme the SDK emits whatever the session's
+     * peer is, so it opens a wallet only while a `signTxns` call is in flight, and only the wallet
+     * the connected WalletConnect session is paired with (its peer name/url, read from the page).
+     */
+    private fun launch(event: BridgeEvent.OpenUri, launchVendor: WalletVendor? = event.vendor) {
+        val scheme = SCHEME.find(event.uri)?.groupValues?.get(1)?.lowercase()
+        if (scheme == null || scheme in PASS_THROUGH_SCHEMES) {
+            uriLauncher.open(event.uri, launchVendor)
+            _events.tryEmit(event)
+            return
+        }
+        if (signing.isEmpty()) return dropLaunch(scheme, "no sign request pending")
+        mainHandler.post {
+            val wv = webView ?: return@post dropLaunch(scheme, "bridge not attached")
+            wv.evaluateJavascript(PEER_QUERY) { result ->
+                val vendor = sessionVendor(result)
+                when {
+                    signing.isEmpty() -> dropLaunch(scheme, "sign request already finished")
+                    vendor == null -> dropLaunch(scheme, "session wallet unknown")
+                    scheme !in vendor.signSchemes() -> dropLaunch(scheme, "not the session wallet (${vendor.id})")
+                    else -> {
+                        uriLauncher.open(event.uri, vendor)
+                        _events.tryEmit(BridgeEvent.OpenUri(event.uri, vendor))
+                    }
+                }
+            }
+        }
+    }
+
+    /** Logs the scheme and reason only: the full URI can carry a WalletConnect topic. */
+    private fun dropLaunch(scheme: String, reason: String) {
+        Log.i(TAG, "wallet launch dropped: scheme=$scheme reason=$reason")
     }
 
     private suspend fun ensureReady() {
@@ -192,6 +231,7 @@ class WalletBridgeWebView @Inject constructor(
         val id = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<JsonObject?>()
         pending[id] = deferred
+        if (method == "signTxns") signing += id
         val script = BridgeProtocol.dispatchScript(BridgeProtocol.encodeRequest(id, method, params))
         mainHandler.post {
             val wv = webView
@@ -207,6 +247,8 @@ class WalletBridgeWebView @Inject constructor(
             pending.remove(id)
             mainHandler.post { webView?.evaluateJavascript(BridgeProtocol.dispatchScript(BridgeProtocol.encodeRequest(UUID.randomUUID().toString(), "cancel", mapOf("id" to id))), null) }
             throw BridgeException(BridgeErrorCode.TIMEOUT, "The wallet did not answer in time ($method)")
+        } finally {
+            signing -= id
         }
     }
 
@@ -272,5 +314,35 @@ class WalletBridgeWebView @Inject constructor(
         private const val READY_TIMEOUT_MS = 20_000L
         private const val CONNECT_TIMEOUT_MS = 120_000L
         private const val SIGN_TIMEOUT_MS = 180_000L
+
+        private val SCHEME = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
+        private val PASS_THROUGH_SCHEMES = setOf("http", "https", "wc")
+
+        /**
+         * The connected WalletConnect v1 session's peer as `{name, url}` (both SDKs keep the session
+         * under `walletconnect`), or null. Nothing else of the session (key, bridge, handshake)
+         * ever leaves the page.
+         */
+        internal const val PEER_QUERY =
+            "(function(){try{var s=JSON.parse(localStorage.getItem('walletconnect'));var p=s&&s.connected===true&&s.peerMeta;" +
+                "return p?{name:String(p.name||''),url:String(p.url||'')}:null}catch(e){return null}})()"
+
+        /** The wallet a session peer is: by its url's host, else by its name. */
+        internal fun sessionVendor(peerJson: String?): WalletVendor? {
+            val peer = runCatching { JsonParser.parseString(peerJson.orEmpty()).asJsonObject }.getOrNull() ?: return null
+            val name = peer.get("name")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+            val host = runCatching { URI(peer.get("url")?.asString.orEmpty()).host?.lowercase() }.getOrNull().orEmpty()
+            fun hostIs(domain: String) = host == domain || host.endsWith(".$domain")
+            return when {
+                hostIs("perawallet.app") || name.startsWith("Pera", ignoreCase = true) -> WalletVendor.PERA
+                hostIs("defly.app") || name.startsWith("Defly", ignoreCase = true) -> WalletVendor.DEFLY
+                else -> null
+            }
+        }
+
+        private fun WalletVendor.signSchemes(): Set<String> = when (this) {
+            WalletVendor.PERA -> setOf("perawallet-wc", "perawallet")
+            WalletVendor.DEFLY -> setOf("defly-wc", "defly")
+        }
     }
 }
