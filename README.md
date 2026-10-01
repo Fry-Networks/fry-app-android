@@ -50,7 +50,7 @@ their implementation:
 ## Miners (dashboard)
 
 The Miners tab manages every miner the signed-in wallet owns on
-[dashboard.frynetworks.com](https://dashboard.frynetworks.com) — not only the boards this app
+[fry.farm/dashboard](https://fry.farm/dashboard) — not only the boards this app
 provisions. It is native Compose on top of the dashboard's existing JSON API:
 
 - Sign in with Pera or Defly. The app never shows the web dashboard; the wallet handshake and

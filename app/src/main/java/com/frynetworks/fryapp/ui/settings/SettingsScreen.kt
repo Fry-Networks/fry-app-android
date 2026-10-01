@@ -43,7 +43,7 @@ import com.frynetworks.fryapp.ui.update.AppUpdateSection
 
 /** Public links surfaced from Settings. Not a fleet/API credential — plain marketing/docs URLs. */
 private object FryLinks {
-    const val DASHBOARD = "https://dashboard.frynetworks.com"
+    const val DASHBOARD = "https://fry.farm/dashboard"
     // The site's own /docs redirect lands here, so use the canonical target directly.
     const val DOCS = "https://docs.frynetworks.com/docs/"
     // The canonical invite host Fry owns. Never link a third-party invite code: the previous
