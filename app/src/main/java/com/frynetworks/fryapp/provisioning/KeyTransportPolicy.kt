@@ -60,7 +60,7 @@ sealed interface KeyTransport {
  */
 object KeyTransportPolicy {
 
-    const val OPEN_AP_REFUSAL = "This board's setup network is open, so Fry will not send a miner key over it. It already has a key; see https://docs.frynetworks.com/docs/esp-miners.html#esp8266."
+    const val OPEN_AP_REFUSAL = "This board's setup network is open, so Fry will not send a miner key over it. The board keeps the key it already has: https://docs.frynetworks.com/docs/esp-miners.html#esp8266"
 
     /**
      * PROTOCOL.md 11.8: the errors a running board keeps while it ignores unencrypted 01/02/03

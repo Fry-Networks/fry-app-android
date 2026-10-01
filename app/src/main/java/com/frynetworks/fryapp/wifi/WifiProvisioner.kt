@@ -343,4 +343,4 @@ internal fun errCode(body: String?): String? =
     runCatching { JsonParser.parseString(body.orEmpty()).asJsonObject["err"]?.takeIf { !it.isJsonNull }?.asString }.getOrNull()
 
 const val SOFTAP_NEEDS_ANDROID_10 =
-    "Setting up an ESP8266 over its Wi-Fi setup network needs Android 10 or newer. Without the app, use the board's own Wi-Fi setup page: https://docs.frynetworks.com/docs/esp-miners.html#esp8266."
+    "Setting up an ESP8266 over its Wi-Fi setup network needs Android 10 or newer. You can set it up from any phone or computer through the board's own Wi-Fi setup page: https://docs.frynetworks.com/docs/esp-miners.html#no-android"

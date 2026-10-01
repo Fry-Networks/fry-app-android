@@ -76,7 +76,7 @@ object DiscoveryPreflight {
 
     private fun ble(inputs: DiscoveryInputs): TransportPreflight {
         if (!inputs.bleSupported) {
-            return TransportPreflight(listOf(PreflightIssue("ble_unsupported", "This phone has no Bluetooth LE, so it cannot find or set up ESP32, ESP32-C3 or ESP32-S3 boards. See https://docs.frynetworks.com/docs/esp-miners.html#no-android.", null, PreflightAction.None)))
+            return TransportPreflight(listOf(PreflightIssue("ble_unsupported", "This phone has no Bluetooth LE, so it cannot find or set up ESP32, ESP32-C3 or ESP32-S3 boards. See https://docs.frynetworks.com/docs/esp-miners.html#no-android", null, PreflightAction.None)))
         }
         val issues = mutableListOf<PreflightIssue>()
         permissionIssue(inputs, blePermissions(inputs.sdkInt), "Bluetooth and Location")?.let { issues += it }
@@ -89,7 +89,7 @@ object DiscoveryPreflight {
 
     private fun softAp(inputs: DiscoveryInputs): TransportPreflight {
         if (inputs.sdkInt < SOFTAP_MIN_SDK) {
-            return TransportPreflight(listOf(PreflightIssue("softap_unsupported", "Setting up an ESP8266 over its Wi-Fi setup network needs Android 10 or newer. Without the app, use the board's own Wi-Fi setup page: https://docs.frynetworks.com/docs/esp-miners.html#esp8266.", null, PreflightAction.None)))
+            return TransportPreflight(listOf(PreflightIssue("softap_unsupported", "Setting up an ESP8266 over its Wi-Fi setup network needs Android 10 or newer. You can set it up from any phone or computer through the board's own Wi-Fi setup page: https://docs.frynetworks.com/docs/esp-miners.html#no-android", null, PreflightAction.None)))
         }
         val issues = mutableListOf<PreflightIssue>()
         permissionIssue(inputs, softApPermissions(inputs.sdkInt), "Location and Nearby devices")?.let { issues += it }
