@@ -24,7 +24,7 @@ class ProvisionErrorCopyTest {
     fun `codes 6 to 13 name the key and registration problems`() {
         assertTrue(ProvisionErrorCopy.forError(ProvError.KEY_REQUIRED).contains("FEM-"))
         assertTrue(ProvisionErrorCopy.forError(ProvError.BAD_KEY).contains("32 letters and digits"))
-        assertTrue(ProvisionErrorCopy.forError(ProvError.KEY_LOCKED).contains("USB web setup"))
+        assertTrue(ProvisionErrorCopy.forError(ProvError.KEY_LOCKED).let { t -> t.contains("docs/esp-miners.html#flash") && listOf("USB", "web setup", "browser", "Improv", "setup-miner", "dashboard setup", "Web Serial", "Web Bluetooth", "No Android needed").none { t.contains(it, ignoreCase = true) } })
         assertTrue(ProvisionErrorCopy.forError(ProvError.REG_UNAUTHORIZED).contains("IOT- keys"))
         assertTrue(ProvisionErrorCopy.forError(ProvError.REG_FORBIDDEN).contains("another wallet"))
         assertTrue(ProvisionErrorCopy.forError(ProvError.REG_KEY_IN_USE).contains("another install"))
