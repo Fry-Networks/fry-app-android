@@ -158,7 +158,12 @@ fun ProvisionScreen(
                 Text(notice.message, modifier = Modifier.testTag("prov_key_notice"))
                 CopyableText(text = notice.boardKey, label = "Board miner key", textTag = "prov_board_key", copyTag = "prov_board_key_copy")
             }
-            // R3: the board kept its own key; show the dashboard's answer when it needs the owner.
+            // R3: the board kept its own key; the screen holds while it is checked, so say so.
+            if (boardKeyCheck is KeyCheckUi.Checking) {
+                Spacer(Modifier.height(8.dp))
+                Text(ProvisionViewModel.BOARD_KEY_CHECKING, modifier = Modifier.testTag("prov_board_key_checking"))
+            }
+            // R3: show the dashboard's answer when it needs the owner.
             val boardResult = ((boardKeyCheck as? KeyCheckUi.Done)?.result as? KeyCheckResult.Checked)
                 ?.takeIf { it.needsAcknowledgement || it.blocksSetup }
             boardResult?.let { result ->

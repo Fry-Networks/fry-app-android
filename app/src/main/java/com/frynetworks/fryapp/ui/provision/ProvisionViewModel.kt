@@ -410,6 +410,7 @@ class ProvisionViewModel @Inject constructor(
         const val KEY_BLOCKED = "This key cannot be set up for your wallet."
         const val KEY_READ_BACK = "Connected. Checking the key on the board…"
         const val KEY_READ_BACK_FAILED = "Connected, but the key on the board could not be read back to confirm it. Unplug the board for 5 seconds, plug it back in, and set it up again."
+        const val BOARD_KEY_CHECKING = "Checking this board's key with the dashboard…"
         const val KEY_STILL_CHECKING = "Still checking this key with the dashboard. Wait a moment, then try again."
         const val DEVICE_KEEPS_NOTICE = "This board runs older firmware that keeps the key it made itself, so the key you entered was not written. Add this board key on the dashboard instead:"
         const val CONNECTED_MASKED_KEY = "The board is connected with the key it already had. Find it on the dashboard by the key shown here."
