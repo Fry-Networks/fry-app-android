@@ -8,7 +8,7 @@ import org.junit.Test
 /**
  * R2 (IV5): when a dashboard sends a `reward_block_reason` code without its message, the app's
  * words for that code are the dashboard's canonical words (RUN/audit/r2-strings.json
- * iv5-r2-draft-1), picked by the same platform variant rule, so the same state reads the same.
+ * iv5-r2-1 FINAL), picked by the same platform variant rule, so the same state reads the same.
  * `platform_not_enabled` keeps the wording MinerStateTermsTest pins.
  */
 class MinerStateTermsFallbackTest {
@@ -36,7 +36,7 @@ class MinerStateTermsFallbackTest {
 
     @Test
     fun `ESP boards get the dashboard's ESP variant`() {
-        assertEquals("the server has not recorded this board's software version yet.", MinerStateTerms.reasonWords("no_software_report", "esp32"))
+        assertEquals("the server has no software version from this board yet.", MinerStateTerms.reasonWords("no_software_report", "esp32"))
         assertEquals(
             "ESP8266 rewards are paid per valid 10-minute slot proof, and no valid slot proofs were recorded for this board on the last scored day.",
             MinerStateTerms.reasonWords("no_slot_proofs", "esp8266"),
@@ -55,6 +55,6 @@ class MinerStateTermsFallbackTest {
         val json = """{"miner_key":"FEM-TESTKEY0000000000000000000000001","reward_eligible":false,
             "reward_block_reason":"no_software_report","device_platform":"esp32s3"}"""
         val d = DashboardGson.instance.fromJson(json, DeviceDetail::class.java)
-        assertEquals("Not earning: the server has not recorded this board's software version yet.", MinerStateTerms.earning(d))
+        assertEquals("Not earning: the server has no software version from this board yet.", MinerStateTerms.earning(d))
     }
 }
