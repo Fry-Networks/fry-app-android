@@ -64,8 +64,8 @@ fun DeviceDetailScreen(
                 )
                 Text("Chip: ${currentDevice.chip}")
                 Text("Firmware: ${currentDevice.fwVersion}")
-                Text("VPN state: ${statusLabel(currentDevice.status)}")
-                Text("Last seen: ${formatElapsed(currentDevice.lastSeen)}")
+                Text("Last setup result: ${statusLabel(currentDevice.status)}")
+                Text("Last set up from this phone: ${formatElapsed(currentDevice.lastSeen)}")
 
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = { viewModel.checkForUpdate() }) { Text("Check for update") }
@@ -108,8 +108,8 @@ private fun statusLabel(status: Int): String {
     return when (state) {
         ProvState.IDLE -> "Idle"
         ProvState.PROVISIONING -> "Provisioning"
-        ProvState.CONNECTING -> "Connecting"
-        ProvState.CONNECTED -> "Connected"
+        ProvState.CONNECTING -> "Joining Wi-Fi"
+        ProvState.CONNECTED -> "Joined Wi-Fi"
         ProvState.ERROR -> "Error"
     }
 }
