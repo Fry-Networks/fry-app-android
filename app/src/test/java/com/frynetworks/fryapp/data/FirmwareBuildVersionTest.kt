@@ -43,7 +43,7 @@ class FirmwareBuildVersionTest {
     }
 
     @Test
-    fun `an ESP8266 on 0.3.3 is offered its own 0_3_4, never the top-level 0_4_1`() = runTest {
+    fun `an ESP8266 on 0_3_3 is offered its own 0_3_4, never the top-level 0_4_1`() = runTest {
         assertEquals(UpdateCheckResult.Available("0.3.4", "https://example.invalid/fw-v0.3.4/firmware-esp8266.bin"), check("ESP8266", "0.3.3"))
         assertEquals(UpdateCheckResult.UpToDate, check("ESP8266", "0.3.4"))
     }
