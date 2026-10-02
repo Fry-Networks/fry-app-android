@@ -89,7 +89,7 @@ object MinerStateTerms {
             // Pinned by MinerStateTermsTest; the dashboard adopted these words (IV5).
             "platform_not_enabled" -> "rewards are not enabled for this board type yet"
             "no_software_report" ->
-                if (esp) "the server has not recorded this board's software version yet."
+                if (esp) "the server has no software version from this board yet."
                 else "the device does not report its software version, so the server cannot confirm it runs a supported client. Update its firmware or client."
             "no_slot_proofs" ->
                 if (esp) "$label rewards are paid per valid 10-minute slot proof, and no valid slot proofs were recorded for this board on the last scored day."
