@@ -35,8 +35,9 @@ class DeviceScreenCopyTest {
         val lits = literals()
         assertTrue("scanner sees the screen's literals", "Check for update" in lits)
         assertEquals("live-status wording left: ${lits.filter { liveWording(it).isNotEmpty() }}", emptyList<String>(), lits.filter { liveWording(it).isNotEmpty() })
-        assertTrue("Last setup result: " in lits)
-        assertTrue("Last set up from this phone: " in lits)
-        assertTrue("Joined Wi-Fi" in lits)
+        // Template literals keep their `${…}` part, so the labels are matched as prefixes.
+        assertTrue("no 'Last setup result: ' label in $lits", lits.any { it.startsWith("Last setup result: ") })
+        assertTrue("no 'Last set up from this phone: ' label in $lits", lits.any { it.startsWith("Last set up from this phone: ") })
+        assertTrue("no 'Joined Wi-Fi' in $lits", "Joined Wi-Fi" in lits)
     }
 }
