@@ -41,6 +41,8 @@ fun DeviceDetailScreen(
 ) {
     val device by viewModel.device.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+    // Collected only while the screen is STARTED, which is what keeps the poll running (AP5).
+    val liveStatus by viewModel.liveStatus.collectAsStateWithLifecycle()
     val session by sessionViewModel.state.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
 
@@ -66,6 +68,17 @@ fun DeviceDetailScreen(
                 Text("Firmware: ${currentDevice.fwVersion}")
                 Text("Last setup result: ${statusLabel(currentDevice.status)}")
                 Text("Last set up from this phone: ${formatElapsed(currentDevice.lastSeen)}")
+
+                Spacer(Modifier.height(8.dp))
+                Text(LiveStatusText.LABEL)
+                val now = System.currentTimeMillis()
+                Text(
+                    text = LiveStatusText.status(liveStatus, now),
+                    modifier = Modifier.testTag("device_live_status"),
+                )
+                LiveStatusText.checked(liveStatus, now)?.let {
+                    Text(text = it, modifier = Modifier.testTag("device_live_status_checked"))
+                }
 
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = { viewModel.checkForUpdate() }) { Text("Check for update") }
