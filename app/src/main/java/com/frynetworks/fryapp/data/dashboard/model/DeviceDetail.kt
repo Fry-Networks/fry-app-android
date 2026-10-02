@@ -41,6 +41,8 @@ data class DeviceDetail(
     val rewardBlockReason: String? = null,
     /** C-4: the dashboard's own words for [rewardBlockReason], e.g. "No heartbeat in the last 24 hours". */
     val rewardBlockMessage: String? = null,
+    /** R2: the dashboard's own "how to fix it" words for the blocking gate. */
+    val rewardFixText: String? = null,
     /** C-4: every reward gate with whether it is met. */
     val rewardBlockGates: List<RewardGate> = emptyList(),
     /** C-4: `you` / `another_wallet` / null when unknown. */
@@ -121,6 +123,7 @@ internal object DeviceDetailDeserializer : JsonDeserializer<DeviceDetail> {
             rewardEligible = booleanOrNull("reward_eligible"),
             rewardBlockReason = string("reward_block_reason"),
             rewardBlockMessage = string("reward_block_message"),
+            rewardFixText = string("reward_fix_text"),
             rewardBlockGates = obj.get("reward_block_gates")?.takeIf { it.isJsonArray }?.asJsonArray
                 ?.mapNotNull { e -> e.takeIf { it.isJsonObject }?.let { context.deserialize<RewardGate>(it, RewardGate::class.java) } }
                 .orEmpty(),

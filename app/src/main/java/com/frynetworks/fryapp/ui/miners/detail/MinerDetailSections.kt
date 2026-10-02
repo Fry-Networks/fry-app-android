@@ -80,6 +80,9 @@ fun IdentityCard(state: MinerDetailUiState, modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.testTag("miner_reward_block_reason"),
             )
+            MinerStateTerms.fixText(detail)?.let { fix ->
+                Text(fix, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("miner_reward_fix_text"))
+            }
         }
         LabelValue("Verification", rows.verification, "miner_verified")
         if (state.isVirtual) LabelValue("Type", "Virtual miner", "miner_virtual")
