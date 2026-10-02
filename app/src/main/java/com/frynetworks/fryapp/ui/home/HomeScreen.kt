@@ -233,7 +233,7 @@ private fun OnlineStatusChip(device: Device) {
     val online = isDeviceOnline(device)
     AssistChip(
         onClick = {},
-        label = { Text("Paired · seen " + TimeFormat.relative(device.lastSeen, System.currentTimeMillis())) },
+        label = { Text("Paired · set up " + TimeFormat.relative(device.lastSeen, System.currentTimeMillis())) },
         colors = AssistChipDefaults.assistChipColors(
             labelColor = if (online) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
         ),
