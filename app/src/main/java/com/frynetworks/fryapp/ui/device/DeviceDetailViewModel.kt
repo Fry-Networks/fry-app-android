@@ -9,10 +9,12 @@ import com.frynetworks.fryapp.data.DeviceRepository
 import com.frynetworks.fryapp.data.UpdateCheckResult
 import com.frynetworks.fryapp.data.dashboard.repo.MinerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -24,7 +26,7 @@ class DeviceDetailViewModel(
     private val repository: DeviceRepository,
     miners: MinerRepository,
     session: SessionRepository,
-    nowMillis: () -> Long,
+    private val nowMillis: () -> Long,
 ) : ViewModel() {
 
     @Inject
@@ -41,11 +43,19 @@ class DeviceDetailViewModel(
 
     /**
      * AP5: the dashboard's live status (`POST /api/devices/{key}` with the session wallet), polled
-     * only while collected, i.e. while the screen is visible; nothing runs when it is hidden.
+     * only while collected, i.e. while the screen is visible; nothing runs when it is hidden. The
+     * ticker re-ages the last answer, so it turns unavailable after 15 min without a new emission.
+     * stopTimeoutMillis must stay 0: hiding the screen stops requests at once.
      */
-    val liveStatus: StateFlow<LiveStatus> = LiveStatusPoller(session.state, { miners.refreshDetail(minerKey) }, nowMillis)
-        .updates()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(stopTimeoutMillis = 0, replayExpirationMillis = 0), LiveStatus.Checking)
+    val liveStatus: StateFlow<LiveStatus> =
+        combine(LiveStatusPoller(session.state, { miners.refreshDetail(minerKey) }, nowMillis).updates(), liveTicker(nowMillis)) { status, _ ->
+            LiveStatusRules.current(status, nowMillis())
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(stopTimeoutMillis = 0, replayExpirationMillis = 0), LiveStatus.Checking)
+
+    /** Ticks while the screen collects it, so "checked … ago" moves while the status is unchanged. */
+    val liveClock: Flow<Long> = liveTicker(nowMillis)
+
+    fun now(): Long = nowMillis()
 
     private val _updateState = MutableStateFlow<UpdateCheckResult?>(null)
     val updateState = _updateState.asStateFlow()

@@ -11,6 +11,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformLatest
 
@@ -36,6 +37,9 @@ sealed interface LiveStatus {
 object LiveStatusRules {
     const val POLL_MS = 60_000L
     const val STALE_MS = 15 * 60_000L
+
+    /** How often a visible screen re-reads the clock (ages, staleness); never a request. */
+    const val TICK_MS = 30_000L
     private const val MAX_BACKOFF_MS = 5 * 60_000L
 
     fun term(isActive: Boolean?): String = MinerStateTerms.rows(DeviceDetail(isActive = isActive), null, null).active
@@ -53,6 +57,14 @@ object LiveStatusRules {
     /** [status] as it may be shown at [nowMillis]: an answer older than [STALE_MS] is unavailable. */
     fun current(status: LiveStatus, nowMillis: Long): LiveStatus =
         if (status is LiveStatus.Known && nowMillis - status.checkedAtMillis > STALE_MS) LiveStatus.Unavailable(status.checkedAtMillis) else status
+}
+
+/** The clock, read at once and then every [LiveStatusRules.TICK_MS] for as long as it is collected. */
+fun liveTicker(nowMillis: () -> Long): Flow<Long> = flow {
+    while (true) {
+        emit(nowMillis())
+        delay(LiveStatusRules.TICK_MS)
+    }
 }
 
 /** Every word the device screen shows for its live status. */

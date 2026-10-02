@@ -43,6 +43,8 @@ fun DeviceDetailScreen(
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     // Collected only while the screen is STARTED, which is what keeps the poll running (AP5).
     val liveStatus by viewModel.liveStatus.collectAsStateWithLifecycle()
+    // Ticks every 30 s while STARTED, so the "checked" ages move between answers.
+    val liveNow by viewModel.liveClock.collectAsStateWithLifecycle(initialValue = viewModel.now())
     val session by sessionViewModel.state.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
 
@@ -71,12 +73,11 @@ fun DeviceDetailScreen(
 
                 Spacer(Modifier.height(8.dp))
                 Text(LiveStatusText.LABEL)
-                val now = System.currentTimeMillis()
                 Text(
-                    text = LiveStatusText.status(liveStatus, now),
+                    text = LiveStatusText.status(liveStatus, liveNow),
                     modifier = Modifier.testTag("device_live_status"),
                 )
-                LiveStatusText.checked(liveStatus, now)?.let {
+                LiveStatusText.checked(liveStatus, liveNow)?.let {
                     Text(text = it, modifier = Modifier.testTag("device_live_status_checked"))
                 }
 
