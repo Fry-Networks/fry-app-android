@@ -13,7 +13,7 @@ object FirmwareUpdateText {
     private const val GUIDE = "https://docs.frynetworks.com/docs/esp-miners.html"
 
     /** Chips whose boards take the published firmware by themselves. */
-    private val AUTO_UPDATE_CHIPS = setOf("ESP32", "ESP32-C3")
+    private val AUTO_UPDATE_CHIPS = setOf("ESP32", "ESP32C3")
 
     private const val AUTO_HOW = "ESP32 and ESP32-C3 boards install it by themselves shortly after Wi-Fi comes up and every 6 h. Nothing to flash."
 
@@ -23,7 +23,7 @@ object FirmwareUpdateText {
     const val ESP8266_TEXT = "No automatic firmware update for this chip (ESP8266). This board keeps the firmware it has; the guide explains your options:"
 
     fun forResult(chip: String, result: UpdateCheckResult): String {
-        val key = chip.uppercase()
+        val key = chipKey(chip)
         manualChip(key)?.let { return it.first }
         if (key !in AUTO_UPDATE_CHIPS) return "Board firmware update status unknown for this chip."
         return when (result) {
@@ -36,10 +36,13 @@ object FirmwareUpdateText {
     }
 
     /** The guide section for a chip without automatic updates; null for the others. */
-    fun guideUrl(chip: String): String? = manualChip(chip.uppercase())?.second
+    fun guideUrl(chip: String): String? = manualChip(chipKey(chip))?.second
+
+    /** "ESP32-C3" (BLE/SoftAP) and "esp32c3" (dashboard platform) name the same chip. */
+    private fun chipKey(chip: String): String = chip.trim().uppercase().replace("-", "")
 
     private fun manualChip(key: String): Pair<String, String>? = when (key) {
-        "ESP32-S3" -> S3_TEXT to "$GUIDE#s3"
+        "ESP32S3" -> S3_TEXT to "$GUIDE#s3"
         "ESP8266" -> ESP8266_TEXT to "$GUIDE#esp8266"
         else -> null
     }
