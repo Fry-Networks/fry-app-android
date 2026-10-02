@@ -342,7 +342,8 @@ class WalletBridgeWebView @Inject constructor(
 
         private fun WalletVendor.signSchemes(): Set<String> = when (this) {
             WalletVendor.PERA -> setOf("perawallet-wc", "perawallet")
-            WalletVendor.DEFLY -> setOf("defly-wc", "defly")
+            // On Android the Defly Connect SDK redirects a sign to `algorand://?browser=…` (AP3-F).
+            WalletVendor.DEFLY -> setOf("defly-wc", "defly", "algorand")
         }
     }
 }
