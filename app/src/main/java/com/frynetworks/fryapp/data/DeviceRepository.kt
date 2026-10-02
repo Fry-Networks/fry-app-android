@@ -36,12 +36,14 @@ class DeviceRepository @Inject constructor(
         val manifest = otaManifestClient.fetchManifest() ?: return UpdateCheckResult.Unknown
         val buildEnv = chipToBuildEnv(device.chip) ?: return UpdateCheckResult.Unknown
         val build = manifest.builds[buildEnv] ?: return UpdateCheckResult.Unknown
+        // A build's own version wins (R4: ESP8266 0.3.4 beside the top-level ESP32/C3 0.4.1).
+        val published = build.version?.takeIf { it.isNotBlank() } ?: manifest.firmwareVersion
         // SemVer precedence, never a string compare: a board on 0.3.3 must not be told that the
         // published 0.3.1 is an "update" (U15).
-        val latest = SemVer.parse(manifest.firmwareVersion) ?: return UpdateCheckResult.Unknown
+        val latest = SemVer.parse(published) ?: return UpdateCheckResult.Unknown
         val current = SemVer.parse(device.fwVersion) ?: return UpdateCheckResult.Unknown
         return if (latest > current) {
-            UpdateCheckResult.Available(manifest.firmwareVersion, build.url)
+            UpdateCheckResult.Available(published, build.url)
         } else {
             UpdateCheckResult.UpToDate
         }

@@ -10,7 +10,12 @@ import okhttp3.Request
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class OtaBuild(val url: String, val sha256: String)
+data class OtaBuild(
+    val url: String,
+    val sha256: String,
+    /** This build's own version (e.g. ESP8266 0.3.4); null = the manifest's top-level version. */
+    val version: String? = null,
+)
 
 /** PROTOCOL.md section 6. */
 data class OtaManifest(
