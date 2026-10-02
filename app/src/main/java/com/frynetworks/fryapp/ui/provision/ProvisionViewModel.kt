@@ -105,6 +105,13 @@ class ProvisionViewModel @Inject constructor(
 
     private var keyCheckJob: Job? = null
 
+    private val _boardKeyCheck = MutableStateFlow<KeyCheckUi>(KeyCheckUi.Idle)
+
+    /** R3: the dashboard's answer for the key the board kept itself (one key per device). */
+    val boardKeyCheck = _boardKeyCheck.asStateFlow()
+
+    private var boardKeyCheckJob: Job? = null
+
     private var holdsInhibitor = false
 
     init {
@@ -141,6 +148,21 @@ class ProvisionViewModel @Inject constructor(
     fun clearKeyCheck() {
         keyCheckJob?.cancel()
         _keyCheck.value = KeyCheckUi.Idle
+    }
+
+    /**
+     * R3: a board that keeps the key it minted itself (protocol-1 DEVICE_KEEPS, or no owner key
+     * entered) is checked too, once its key is known, so a key already running elsewhere (a PC)
+     * is flagged. Never blocks setup: the board uses that key either way.
+     */
+    private fun checkBoardKey(boardKey: String, ownerKey: String?) {
+        val checker = services.keyChecker ?: return
+        if (boardKey == ownerKey || MinerKeyFormat.parse(boardKey) !is MinerKeyInput.Valid) return
+        val current = _boardKeyCheck.value
+        if ((current as? KeyCheckUi.Checking)?.minerKey == boardKey || (current as? KeyCheckUi.Done)?.minerKey == boardKey) return
+        boardKeyCheckJob?.cancel()
+        _boardKeyCheck.value = KeyCheckUi.Checking(boardKey)
+        boardKeyCheckJob = viewModelScope.launch { _boardKeyCheck.value = KeyCheckUi.Done(boardKey, checker.check(boardKey)) }
     }
 
     fun submit(address: String, transport: String, ssid: String, pass: String, wallet: String) =
@@ -183,6 +205,8 @@ class ProvisionViewModel @Inject constructor(
         }
         val setupCode = keyStep.setupCode?.trim()?.takeIf { it.isNotEmpty() }
         _keyNotice.value = null
+        boardKeyCheckJob?.cancel()
+        _boardKeyCheck.value = KeyCheckUi.Idle
 
         _state.value = ProvisionUiState.InProgress("Connecting...")
         viewModelScope.launch {
@@ -200,6 +224,7 @@ class ProvisionViewModel @Inject constructor(
                 if (ownerKey != null && !caps.keyWrite && minerKey.isNotEmpty() && minerKey != ownerKey) {
                     _keyNotice.value = KeyNotice(minerKey, DEVICE_KEEPS_NOTICE)
                 }
+                if (!ownerKeyTaken() && minerKey.isNotEmpty()) checkBoardKey(minerKey, ownerKey)
             }
 
             suspend fun persist(status: Int) {
@@ -230,7 +255,7 @@ class ProvisionViewModel @Inject constructor(
             // The board committed the settings and dropped the link to join Wi-Fi (BLE) or took
             // its setup AP down (SoftAP). Ask the backend whether it arrived.
             suspend fun handOff() {
-                if (ownerKeyTaken()) minerKey = ownerKey.orEmpty()
+                if (ownerKeyTaken()) minerKey = ownerKey.orEmpty() else if (minerKey.isNotEmpty()) checkBoardKey(minerKey, ownerKey)
                 if (minerKey.isEmpty()) {
                     _state.value = ProvisionUiState.Error(HANDOFF_NO_KEY)
                     return
@@ -388,6 +413,13 @@ class ProvisionViewModel @Inject constructor(
         const val KEY_STILL_CHECKING = "Still checking this key with the dashboard. Wait a moment, then try again."
         const val DEVICE_KEEPS_NOTICE = "This board runs older firmware that keeps the key it made itself, so the key you entered was not written. Add this board key on the dashboard instead:"
         const val CONNECTED_MASKED_KEY = "The board is connected with the key it already had. Find it on the dashboard by the key shown here."
+
+        /** Whether the board-key answer keeps the screen open: still checking, a key active elsewhere not yet acknowledged, or a key that cannot earn here. */
+        fun boardKeyHolds(check: KeyCheckUi, acknowledged: Boolean): Boolean = when (check) {
+            KeyCheckUi.Idle -> false
+            is KeyCheckUi.Checking -> true
+            is KeyCheckUi.Done -> (check.result as? KeyCheckResult.Checked)?.let { (it.needsAcknowledgement && !acknowledged) || it.blocksSetup } ?: false
+        }
 
         fun keyMismatch(readBack: String): String =
             "The board reports a different key (${MinerKeyFormat.mask(readBack)}) than the one you entered. Nothing was changed on the dashboard; restart the board and set it up again."

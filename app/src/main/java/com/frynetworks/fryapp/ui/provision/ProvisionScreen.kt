@@ -1,12 +1,15 @@
 package com.frynetworks.fryapp.ui.provision
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -18,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -26,6 +30,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.frynetworks.fryapp.data.Transport
+import com.frynetworks.fryapp.data.keys.KeyCheckResult
 import com.frynetworks.fryapp.domain.MinerKeyFormat
 import com.frynetworks.fryapp.ui.common.CopyableText
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -46,11 +51,20 @@ fun ProvisionScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val keyCheck by viewModel.keyCheck.collectAsStateWithLifecycle()
     val keyNotice by viewModel.keyNotice.collectAsStateWithLifecycle()
+    val boardKeyCheck by viewModel.boardKeyCheck.collectAsStateWithLifecycle()
+    val boardKeyId = when (val check = boardKeyCheck) {
+        is KeyCheckUi.Checking -> check.minerKey
+        is KeyCheckUi.Done -> check.minerKey
+        KeyCheckUi.Idle -> null
+    }
+    var boardKeyAcknowledged by remember(boardKeyId) { mutableStateOf(false) }
+    val boardKeyHolds = ProvisionViewModel.boardKeyHolds(boardKeyCheck, boardKeyAcknowledged)
 
-    LaunchedEffect(state, keyNotice) {
+    LaunchedEffect(state, keyNotice, boardKeyHolds) {
         val current = state
-        // A board that kept its own key: stay here so the user can copy it first.
-        if (current is ProvisionUiState.Success && keyNotice == null) onDone(current.minerKey)
+        // A board that kept its own key: stay here so the user can copy it first. A board key
+        // active elsewhere (R3) stays until the owner acknowledges it.
+        if (current is ProvisionUiState.Success && keyNotice == null && !boardKeyHolds) onDone(current.minerKey)
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Provision device") }) }) { padding ->
@@ -143,8 +157,31 @@ fun ProvisionScreen(
                 Spacer(Modifier.height(8.dp))
                 Text(notice.message, modifier = Modifier.testTag("prov_key_notice"))
                 CopyableText(text = notice.boardKey, label = "Board miner key", textTag = "prov_board_key", copyTag = "prov_board_key_copy")
+            }
+            // R3: the board kept its own key; show the dashboard's answer when it needs the owner.
+            val boardResult = ((boardKeyCheck as? KeyCheckUi.Done)?.result as? KeyCheckResult.Checked)
+                ?.takeIf { it.needsAcknowledgement || it.blocksSetup }
+            boardResult?.let { result ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = KeyCheckCopy.summary(result),
+                    color = if (result.blocksSetup) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth().testTag("prov_board_key_check").semantics { contentDescription = "Board key check result" },
+                )
+                KeyCheckCopy.acknowledgement(result)?.let { text ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                        Checkbox(checked = boardKeyAcknowledged, onCheckedChange = { boardKeyAcknowledged = it }, modifier = Modifier.testTag("prov_board_key_ack"))
+                        Text(text, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            if (keyNotice != null || boardResult != null) {
                 (state as? ProvisionUiState.Success)?.let { success ->
-                    Button(onClick = { onDone(success.minerKey) }, modifier = Modifier.testTag("prov_continue")) { Text("Continue") }
+                    Button(
+                        onClick = { onDone(success.minerKey) },
+                        enabled = boardResult?.needsAcknowledgement != true || boardKeyAcknowledged,
+                        modifier = Modifier.testTag("prov_continue"),
+                    ) { Text("Continue") }
                 }
             }
             // A masked key (FEM-AB…) names no device on this phone, so there is nothing to open.
