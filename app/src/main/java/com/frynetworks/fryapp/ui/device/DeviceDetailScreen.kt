@@ -24,7 +24,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.frynetworks.fryapp.auth.SessionState
 import com.frynetworks.fryapp.ble.ProvState
-import com.frynetworks.fryapp.data.UpdateCheckResult
 import com.frynetworks.fryapp.ui.common.SessionViewModel
 import com.frynetworks.fryapp.ui.home.ClaimLink
 
@@ -67,7 +66,7 @@ fun DeviceDetailScreen(
                         .semantics { contentDescription = "Miner key" },
                 )
                 Text("Chip: ${currentDevice.chip}")
-                Text("Firmware: ${currentDevice.fwVersion}")
+                Text("Board firmware: ${currentDevice.fwVersion}")
                 Text("Last setup result: ${statusLabel(currentDevice.status)}")
                 Text("Last set up from this phone: ${formatElapsed(currentDevice.lastSeen)}")
 
@@ -83,11 +82,19 @@ fun DeviceDetailScreen(
 
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = { viewModel.checkForUpdate() }) { Text("Check for update") }
-                when (val update = updateState) {
-                    is UpdateCheckResult.Available -> Text("Update available: ${update.latestVersion}")
-                    is UpdateCheckResult.UpToDate -> Text("Firmware is up to date")
-                    is UpdateCheckResult.Unknown -> Text("Update status unknown")
-                    null -> {}
+                updateState?.let { update ->
+                    Text(
+                        text = FirmwareUpdateText.forResult(currentDevice.chip, update),
+                        modifier = Modifier.testTag("device_fw_update"),
+                    )
+                    FirmwareUpdateText.guideUrl(currentDevice.chip)?.let { url ->
+                        TextButton(
+                            onClick = { uriHandler.openUri(url) },
+                            modifier = Modifier.testTag("device_fw_guide"),
+                        ) {
+                            Text("Open the firmware guide")
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
