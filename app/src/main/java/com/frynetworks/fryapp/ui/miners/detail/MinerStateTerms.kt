@@ -100,6 +100,7 @@ object MinerStateTerms {
             "not_registered" -> "this device is not registered to a wallet yet. Register it to start earning."
             "no_reward_wallet" -> "no reward wallet is set for this device. Set one to start earning."
             "ineligible" -> "the server marked this device as not reward-eligible."
+            "lease_held_elsewhere" -> "this key is active on another install. Each board has its own key: register the key this board shows."
             else -> code
         }
     }

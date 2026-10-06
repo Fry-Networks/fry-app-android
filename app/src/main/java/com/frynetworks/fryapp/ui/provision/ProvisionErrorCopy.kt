@@ -62,7 +62,7 @@ object ProvisionErrorCopy {
             ProvError.KEY_LOCKED -> "This board already has a confirmed miner key and will not replace it over the air. To change the key, follow https://docs.frynetworks.com/docs/esp-miners.html#flash and set the board up again."
             ProvError.REG_UNAUTHORIZED -> "Fry does not recognise this miner key. Check it on the dashboard; IOT- keys are no longer accepted, use the FEM- key with the same 32 characters."
             ProvError.REG_FORBIDDEN -> "Fry refused this board's registration. The key may be registered to another wallet; check it on the dashboard."
-            ProvError.REG_KEY_IN_USE -> "This miner key is already active on another install. Stop the other miner or use a different key; one key runs on one install at a time."
+            ProvError.REG_KEY_IN_USE -> "This miner key is already active on another install. Stop the other miner or use a different key; one key runs on one install at a time. ${KeyCheckCopy.OWN_KEY_GUIDANCE}"
             ProvError.REG_REJECTED -> "Fry rejected the registration. Check the miner key and wallet on the dashboard, then try again."
             ProvError.UNREACHABLE -> "The board is on Wi-Fi but cannot reach Fry right now. Leave it powered: it keeps retrying by itself."
         }

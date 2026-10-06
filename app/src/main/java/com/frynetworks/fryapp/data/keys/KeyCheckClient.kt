@@ -36,6 +36,8 @@ sealed interface KeyCheckResult {
         val installs: List<KeyInstall>,
         val consequence: String?,
         val espCompatible: Boolean?,
+        /** The dashboard's additive `reason_code` (IV6 X2), e.g. `lease_held_elsewhere`. */
+        val reasonCode: String? = null,
     ) : KeyCheckResult {
         /** The key runs elsewhere: setting it up here needs the owner's explicit acknowledgement. */
         val needsAcknowledgement: Boolean get() = verdict == VERDICT_ACTIVE_ELSEWHERE
@@ -105,6 +107,7 @@ class KeyCheckClient(private val api: KeyCheckApi) {
             installs = installs,
             consequence = obj.str("consequence"),
             espCompatible = obj.get("device_compatible")?.obj()?.bool("esp_firmware"),
+            reasonCode = obj.str("reason_code"),
         )
     }
 

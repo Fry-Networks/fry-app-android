@@ -6,10 +6,19 @@ import com.frynetworks.fryapp.data.keys.KeyCheckResult
 object KeyCheckCopy {
 
     fun summary(result: KeyCheckResult): String = when (result) {
-        is KeyCheckResult.Checked -> listOfNotNull(result.message, result.bindingRule).joinToString("\n").ifBlank { fallback(result.verdict) }
+        is KeyCheckResult.Checked -> {
+            val own = if (result.reasonCode == LEASE_HELD_ELSEWHERE || (result.verdict == "ok_active_elsewhere" && result.message.isNullOrBlank())) OWN_KEY_GUIDANCE else null
+            listOfNotNull(result.message, result.bindingRule).joinToString("\n").ifBlank { fallback(result.verdict) }
+                .let { text -> if (own != null) "$text\n$own" else text }
+        }
         is KeyCheckResult.Unverifiable -> result.message
         is KeyCheckResult.Failed -> result.message
     }
+
+    const val LEASE_HELD_ELSEWHERE = "lease_held_elsewhere"
+
+    /** Shown with a key that another install holds: a board mints its own key (IV6 A4, U2/U3). */
+    const val OWN_KEY_GUIDANCE = "This board has its own FEM key. Find it on the Identity card and register that key."
 
     /** The checkbox text for an `ok_active_elsewhere` key; null when no acknowledgement is needed. */
     fun acknowledgement(result: KeyCheckResult): String? {
