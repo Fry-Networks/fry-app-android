@@ -2,7 +2,11 @@ package com.frynetworks.fryapp.ui.miners.detail
 
 import android.graphics.Bitmap
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import android.view.View
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -60,7 +64,9 @@ class MinerDetailActionsVisibleTest {
     )
 
     private fun check(fontScale: Float) {
+        var host: View? = null
         compose.setContent {
+            host = LocalView.current
             val base = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(base.density, fontScale)) {
                 FryTheme {
@@ -72,6 +78,19 @@ class MinerDetailActionsVisibleTest {
             }
         }
         val root = compose.onNodeWithTag("miner_root").fetchSemanticsNode().boundsInRoot
+        // The real visible window area: the decor view minus the system bars, the gesture-nav
+        // strip and any cutout (a button under the gesture bar is clipped even inside miner_root).
+        val decor = host!!.rootView
+        val rootInsets = ViewCompat.getRootWindowInsets(decor)!!
+        val bars = rootInsets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        // Only the bottom home-gesture strip counts from systemGestures: the left and right
+        // back-gesture zones overlap ordinary content margins and clip nothing.
+        val gestureBottom = rootInsets.getInsets(WindowInsetsCompat.Type.systemGestures()).bottom
+        val insets = androidx.core.graphics.Insets.of(bars.left, bars.top, bars.right, maxOf(bars.bottom, gestureBottom))
+        val visLeft = insets.left.toFloat()
+        val visTop = insets.top.toFloat()
+        val visRight = (decor.width - insets.right).toFloat()
+        val visBottom = (decor.height - insets.bottom).toFloat()
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         for (tag in tags) {
             compose.onNodeWithTag("miner_content").performScrollToNode(hasTestTag(tag))
@@ -81,6 +100,11 @@ class MinerDetailActionsVisibleTest {
             assertTrue("$tag at $fontScale right ${b.right} > ${root.right}", b.right <= root.right + 0.5f)
             assertTrue("$tag at $fontScale top ${b.top} < ${root.top}", b.top >= root.top)
             assertTrue("$tag at $fontScale bottom ${b.bottom} > ${root.bottom}", b.bottom <= root.bottom + 0.5f)
+            val w = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow
+            assertTrue("$tag at $fontScale window left ${w.left} < $visLeft", w.left >= visLeft)
+            assertTrue("$tag at $fontScale window right ${w.right} > $visRight", w.right <= visRight + 0.5f)
+            assertTrue("$tag at $fontScale window top ${w.top} < $visTop (status bar)", w.top >= visTop)
+            assertTrue("$tag at $fontScale window bottom ${w.bottom} > $visBottom (nav/gesture bar)", w.bottom <= visBottom + 0.5f)
             assertTrue("$tag at $fontScale is not 48 dp tall: ${b.height}", b.height >= 48f * ctx.resources.displayMetrics.density - 1f)
         }
         // Evidence screenshot of the scrolled-to-bottom state, kept in the app's cache dir.
