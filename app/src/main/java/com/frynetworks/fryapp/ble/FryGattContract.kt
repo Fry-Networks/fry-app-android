@@ -26,6 +26,9 @@ object FryGattContract {
     /** PROTOCOL.md 11.3 (v1.1): device status JSON; absent on a protocol-1 board. */
     val CHAR_DEVICE_STATUS: UUID = UUID.fromString("4652590a-0001-4000-8000-4652594e4554")
 
+    /** Olostep web-relay opt-in (write-only, 1 byte: 0x00 off, 0x01 on); absent on boards without the feature. */
+    val CHAR_OLOSTEP_OPT_IN: UUID = UUID.fromString("4652590b-0001-4000-8000-4652594e4554")
+
     /** Client Characteristic Configuration Descriptor — enables notifications. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

@@ -20,8 +20,23 @@ class SettingsRepository @Inject constructor(
         prefs.edit { putString(KEY_DEFAULT_WALLET, wallet) }
     }
 
+    /** Olostep web-relay opt-in. Off until the owner turns it on. */
+    fun getOlostepOptIn(): Boolean = prefs.getBoolean(KEY_OLOSTEP_OPT_IN, false)
+
+    fun setOlostepOptIn(optIn: Boolean) {
+        prefs.edit {
+            putBoolean(KEY_OLOSTEP_OPT_IN, optIn)
+            putBoolean(KEY_OLOSTEP_CHOICE_MADE, true)
+        }
+    }
+
+    /** True once the owner has used the toggle (either way); until then no opt-in byte is ever sent to a board. */
+    fun hasOlostepChoice(): Boolean = prefs.getBoolean(KEY_OLOSTEP_CHOICE_MADE, false)
+
     companion object {
         private const val PREFS_NAME = "fry_settings"
         private const val KEY_DEFAULT_WALLET = "default_wallet"
+        private const val KEY_OLOSTEP_OPT_IN = "olostep_opt_in"
+        private const val KEY_OLOSTEP_CHOICE_MADE = "olostep_choice_made"
     }
 }

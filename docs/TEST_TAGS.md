@@ -101,6 +101,7 @@ dashboard reward number, `<FAMILY>` a `MinerFamily` enum name (`FEM`, `RDN`, `IH
 - `settings_account` (shown only when signed in), `account_address` (full address, copyable via `account_copy_address`),
   `account_vendor` (Pera / Defly chip), `account_fingerprint` (device bound / not bound)
 - `settings_signout`, `settings_rebind_fingerprint`, `settings_snackbar`
+- `settings_olostep_toggle` (Olostep web-relay opt-in switch, off by default), `settings_olostep_disclosure` (owner disclosure text)
 - Existing: `settings_wallet`, `settings_link_dashboard`, `settings_link_discord`, `settings_link_docs`, `settings_about_body`, `settings_app_version`
 
 ## Device detail (`ui/device`)

@@ -275,7 +275,10 @@ class ProvisionViewModel @Inject constructor(
             }
 
             if (transport == Transport.BLE) {
-                val flow = if (ownerKey == null) {
+                val flow = if (settingsRepository.hasOlostepChoice()) {
+                    // The owner has used the Olostep toggle: tell this board their current choice.
+                    bleProvisioner.provision(address, ssid, pass, wallet, ownerKey, settingsRepository.getOlostepOptIn())
+                } else if (ownerKey == null) {
                     bleProvisioner.provision(address, ssid, pass, wallet)
                 } else {
                     bleProvisioner.provision(address, ssid, pass, wallet, ownerKey)

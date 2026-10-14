@@ -20,6 +20,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -27,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -58,6 +60,7 @@ fun SettingsScreen(
     val wallet by viewModel.wallet.collectAsStateWithLifecycle()
     val session by viewModel.session.collectAsStateWithLifecycle()
     val account by viewModel.account.collectAsStateWithLifecycle()
+    val olostepOptIn by viewModel.olostepOptIn.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val snackbar = remember { SnackbarHostState() }
 
@@ -97,6 +100,29 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .testTag("settings_wallet")
                     .semantics { contentDescription = "Default wallet address" },
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Olostep web relay (opt-in)", style = MaterialTheme.typography.titleSmall)
+                Switch(
+                    checked = olostepOptIn,
+                    onCheckedChange = viewModel::setOlostepOptIn,
+                    modifier = Modifier
+                        .testTag("settings_olostep_toggle")
+                        .semantics { contentDescription = "Olostep web relay opt-in" },
+                )
+            }
+            Text(
+                text = OLOSTEP_DISCLOSURE,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp).testTag("settings_olostep_disclosure"),
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
@@ -189,3 +215,8 @@ fun AccountCard(
         }
     }
 }
+
+/** Shown beside the Olostep toggle; the firmware shows the same text on its own consent gate. */
+internal const val OLOSTEP_DISCLOSURE =
+    "When enabled, this device relays third-party unauthenticated web requests through your IP. " +
+        "It is opt-in and reversible. It never uses your own accounts, sessions, or stored credentials."

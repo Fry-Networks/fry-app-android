@@ -37,6 +37,9 @@ class SettingsViewModel @Inject constructor(
     private val _wallet = MutableStateFlow(settingsRepository.getDefaultWallet())
     val wallet = _wallet.asStateFlow()
 
+    private val _olostepOptIn = MutableStateFlow(settingsRepository.getOlostepOptIn())
+    val olostepOptIn = _olostepOptIn.asStateFlow()
+
     val session: StateFlow<SessionState> = session.state
 
     private val _account = MutableStateFlow(AccountUiState())
@@ -45,6 +48,11 @@ class SettingsViewModel @Inject constructor(
     fun setWallet(value: String) {
         _wallet.value = value
         settingsRepository.setDefaultWallet(value)
+    }
+
+    fun setOlostepOptIn(value: Boolean) {
+        _olostepOptIn.value = value
+        settingsRepository.setOlostepOptIn(value)
     }
 
     /** `settings_signout`: server sign-out (best effort), wallet disconnect, local wipe, cache drop. */

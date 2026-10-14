@@ -169,8 +169,32 @@ class BleProvisioner @Inject constructor(
      * [minerKey] (already C-1 valid) is written to `09` before the Wi-Fi settings when the board
      * advertises `key_write`; a protocol-1 board keeps its own key and nothing is written.
      */
-    @SuppressLint("MissingPermission")
     fun provision(address: String, ssid: String, pass: String, wallet: String, minerKey: String?): Flow<ProvisionEvent> =
+        provisionInternal(address, ssid, pass, wallet, minerKey, olostepOptIn = null)
+
+    /**
+     * As above, and also signals the owner's Olostep opt-in choice to the board (one byte, 0x01 on / 0x00 off, on
+     * [FryGattContract.CHAR_OLOSTEP_OPT_IN]) before the commit write. Best effort: a board without that
+     * characteristic, or a refused write, never fails provisioning.
+     */
+    fun provision(
+        address: String,
+        ssid: String,
+        pass: String,
+        wallet: String,
+        minerKey: String?,
+        olostepOptIn: Boolean,
+    ): Flow<ProvisionEvent> = provisionInternal(address, ssid, pass, wallet, minerKey, olostepOptIn)
+
+    @SuppressLint("MissingPermission")
+    private fun provisionInternal(
+        address: String,
+        ssid: String,
+        pass: String,
+        wallet: String,
+        minerKey: String?,
+        olostepOptIn: Boolean?,
+    ): Flow<ProvisionEvent> =
         callbackFlow {
             val steps = try {
                 ProvisioningReducer.plan(ssid, pass, wallet)
@@ -212,7 +236,7 @@ class BleProvisioner @Inject constructor(
             // fails with status 133 until Bluetooth is power-cycled.
             try {
                 val outcome = withTimeoutOrNull(OVERALL_TIMEOUT_MS) {
-                    var ok = first.run(steps, minerKey)
+                    var ok = first.run(steps, minerKey, olostepOptIn)
                     if (!ok && bondedAtStart && bondDropped(device)) {
                         Log.w(TAG, "the board refused Android's stored bond; pairing again in a new session")
                         retried.set(true)
@@ -220,7 +244,7 @@ class BleProvisioner @Inject constructor(
                         held.set(null)
                         delay(LINK_SETTLE_MS)
                         session = GattSession(device) { event -> trySend(event) }
-                        ok = session.run(steps, minerKey)
+                        ok = session.run(steps, minerKey, olostepOptIn)
                     }
                     ok
                 }
@@ -359,7 +383,7 @@ class BleProvisioner @Inject constructor(
 
         /** [ownerKey] is what the user entered (C-1 valid) or null; the board's own key is read below as `boardKey`. */
         @SuppressLint("MissingPermission")
-        suspend fun run(steps: List<WriteStep>, ownerKey: String?): Boolean {
+        suspend fun run(steps: List<WriteStep>, ownerKey: String?, olostepOptIn: Boolean? = null): Boolean {
             var connectOutcome = connectOnce()
             if (connectOutcome.status == GATT_ERROR_133) {
                 Log.w(TAG, "connectGatt status 133, retrying once")
@@ -441,6 +465,27 @@ class BleProvisioner @Inject constructor(
             }
 
             enableStatusNotifications()
+
+            // Best effort, and only when the owner has touched the Olostep toggle: boards without the
+            // characteristic (older firmware) are skipped, and a refused write never fails provisioning.
+            // The board accepts ON only on an encrypted link (OFF on any), so ON goes out after the
+            // pairing above, or after one of its own when there was no key step to pair for.
+            if (olostepOptIn != null &&
+                gatt.getService(FryGattContract.SERVICE_FRY)?.getCharacteristic(FryGattContract.CHAR_OLOSTEP_OPT_IN) != null
+            ) {
+                var send = true
+                if (olostepOptIn && keySteps.isEmpty()) {
+                    val enc = pairForKeyWrite(device) &&
+                        readChar(FryGattContract.CHAR_DEVICE_STATUS)?.let { DeviceStatusJson.parse(it) }?.enc == 1
+                    if (!enc) {
+                        Log.w(TAG, "olostep opt-in ON needs an encrypted link; not sent")
+                        send = false
+                    }
+                }
+                if (send && !writeChar(FryGattContract.CHAR_OLOSTEP_OPT_IN, byteArrayOf(if (olostepOptIn) 1 else 0))) {
+                    Log.w(TAG, "olostep opt-in write refused; continuing")
+                }
+            }
 
             for (step in keySteps + steps) {
                 if (step.characteristic == FryGattContract.CHAR_MINER_KEY_WRITE) keyVerdictPending = true
