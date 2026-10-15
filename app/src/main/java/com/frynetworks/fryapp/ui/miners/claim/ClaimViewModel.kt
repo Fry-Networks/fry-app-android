@@ -169,6 +169,17 @@ class ClaimViewModel(
         job = viewModelScope.launch { if (ensureConnected(reconnectOnly = true)) preflight() }
     }
 
+    /**
+     * Re-opens the flow for a recreated sheet: a claim already paying its fee or preparing its envelope for the
+     * same miner and row keeps running, so the fee is not paid twice; anything else starts over.
+     */
+    fun resume(minerKey: String, no: Int?) {
+        val current = ui.value
+        val running = job?.isActive == true && current.minerKey == minerKey && current.no == no
+        if (running && (!current.canCancel || current.state is ClaimState.RequestingEnvelope)) return
+        start(minerKey, no)
+    }
+
     /** `claim_reconnect`: runs a full wallet connect; a different address than the session is WALLET_MISMATCH. */
     fun reconnectWallet() {
         if (ui.value.connecting) return

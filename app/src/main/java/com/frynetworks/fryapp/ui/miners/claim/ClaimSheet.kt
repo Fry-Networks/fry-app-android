@@ -46,7 +46,7 @@ fun ClaimSheet(
     viewModel: ClaimViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    LaunchedEffect(minerKey, no) { viewModel.start(minerKey, no) }
+    LaunchedEffect(minerKey, no) { viewModel.resume(minerKey, no) }
     LaunchedEffect(state.state) { if (state.state is ClaimState.Done) onCompleted() }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
