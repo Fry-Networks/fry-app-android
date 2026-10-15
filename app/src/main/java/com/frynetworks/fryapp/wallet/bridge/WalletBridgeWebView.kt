@@ -159,7 +159,8 @@ class WalletBridgeWebView @Inject constructor(
     inner class NativeInterface {
         @JavascriptInterface
         fun onMessage(json: String) {
-            when (val m = BridgeProtocol.decode(json)) {
+            // A message that cannot be decoded is ignored: nothing may throw out of a @JavascriptInterface method.
+            when (val m = runCatching { BridgeProtocol.decode(json) }.getOrNull()) {
                 is BridgeMessage.Reply -> pending.remove(m.id)?.let { d ->
                     if (m.error == null) d.complete(m.result)
                     else d.completeExceptionally(BridgeException(m.error.code, m.error.message, m.error.detail))
