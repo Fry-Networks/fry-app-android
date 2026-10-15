@@ -13,6 +13,7 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import androidx.annotation.RequiresApi
+import androidx.annotation.VisibleForTesting
 import com.frynetworks.fryapp.provisioning.DeviceCapabilities
 import com.frynetworks.fryapp.provisioning.KeyTransport
 import com.frynetworks.fryapp.provisioning.KeyTransportPolicy
@@ -21,10 +22,12 @@ import com.google.gson.Gson
 import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -170,7 +173,8 @@ class WifiProvisioner @Inject constructor(
 
     @RequiresApi(Build.VERSION_CODES.Q)
     @SuppressLint("MissingPermission")
-    private fun joinAndProvision(
+    @VisibleForTesting
+    internal fun joinAndProvision(
         apSsid: String,
         wifiSsid: String,
         wifiPass: String,
@@ -335,7 +339,7 @@ class WifiProvisioner @Inject constructor(
             } finally {
                 unregisterOnce()
             }
-        }
+        }.flowOn(Dispatchers.IO)
 }
 
 /** The v1.1 `err` field of a `/provision` error body, e.g. `{"err":"key_required"}`; null when absent. */
