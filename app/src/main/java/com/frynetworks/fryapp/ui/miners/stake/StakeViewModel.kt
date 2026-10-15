@@ -163,6 +163,7 @@ class StakeViewModel(
     }
 
     fun start(minerKey: String, context: StakeContext, byod: Boolean) {
+        if (job?.isActive == true && !ui.value.canCancel) return
         job?.cancel()
         ui.value = StakeUiState(minerKey = minerKey, context = context, byod = byod, loading = true, lastWalletUri = ui.value.lastWalletUri)
         job = viewModelScope.launch { if (ensureConnected(reconnectOnly = true)) loadAmount() }
