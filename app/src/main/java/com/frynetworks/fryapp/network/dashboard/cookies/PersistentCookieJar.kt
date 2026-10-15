@@ -66,13 +66,14 @@ class PersistentCookieJar(
 
     private fun ensureLoaded() {
         if (loaded) return
-        loaded = true
         val base = "https://$host/".toHttpUrl()
         val now = System.currentTimeMillis()
         for (line in store.load()) {
             val c = Cookie.parse(base, line) ?: continue
             if (c.expiresAt > now) cookies[key(c)] = c
         }
+        // Last: a failed load stays retryable instead of leaving an empty jar that the next save writes over the session.
+        loaded = true
     }
 
     private fun persist() {
