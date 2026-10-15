@@ -253,6 +253,11 @@ class ClaimViewModel(
                 failDirect(e.code.name, e.message)
                 return false
             }
+        } catch (e: IllegalStateException) {
+            // A reply of the wrong shape (cancellation is rethrown above).
+            ui.update { it.copy(connecting = false) }
+            failDirect(e)
+            return false
         }
         if (account == null) {
             ui.update { it.copy(connecting = false, needsReconnect = true, connected = false) }
@@ -399,6 +404,11 @@ class ClaimViewModel(
         } catch (e: BridgeException) {
             clearSummary()
             if (e.code == BridgeErrorCode.USER_REJECTED) dispatch(ClaimEvent.SignRejected) else failDirect(e)
+            return
+        } catch (e: IllegalStateException) {
+            // A reply of the wrong shape (cancellation is rethrown above).
+            clearSummary()
+            failDirect(e)
             return
         }
         dispatch(ClaimEvent.Signed(signed))

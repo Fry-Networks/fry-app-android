@@ -252,6 +252,11 @@ class StakeViewModel(
                 failDirect(e.code.name, e.message)
                 return false
             }
+        } catch (e: IllegalStateException) {
+            // A reply of the wrong shape (cancellation is rethrown above).
+            ui.update { it.copy(connecting = false) }
+            failDirect(e)
+            return false
         }
         if (account == null) {
             ui.update { it.copy(connecting = false, needsReconnect = true, connected = false, loading = false) }
