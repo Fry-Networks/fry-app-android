@@ -34,6 +34,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeout
 import java.net.URI
 import java.util.UUID
@@ -70,6 +74,11 @@ class WalletBridgeWebView @Inject constructor(
     @Volatile var stubMode: Boolean = false
 
     val isAttached: Boolean get() = webView != null
+
+    private val _generation = MutableStateFlow(0)
+
+    /** Moves on after every renderer crash, once the dead WebView is reset: the host view re-attaches a fresh one. */
+    val generation: StateFlow<Int> = _generation.asStateFlow()
 
     /** Creates (once) and returns the WebView; must be called on the main thread by the host view. */
     @SuppressLint("SetJavaScriptEnabled")
@@ -144,6 +153,7 @@ class WalletBridgeWebView @Inject constructor(
         pending.values.forEach { it.completeExceptionally(boom) }
         pending.clear()
         ready = CompletableDeferred()
+        _generation.update { it + 1 }
     }
 
     inner class NativeInterface {
