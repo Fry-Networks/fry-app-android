@@ -353,7 +353,10 @@ class StakeViewModel(
     private suspend fun runPrecheckAndStake(plan: StakeState.Ready) {
         val key = ui.value.minerKey ?: return
         val context = ui.value.context ?: return
-        val address = address() ?: return
+        val address = address() ?: run {
+            dispatch(StakeEvent.PrecheckFailed("UNAUTHORIZED", ErrorCopy.forCode("UNAUTHORIZED")))
+            return
+        }
 
         try {
             stakes.precheck(key, address, context)
