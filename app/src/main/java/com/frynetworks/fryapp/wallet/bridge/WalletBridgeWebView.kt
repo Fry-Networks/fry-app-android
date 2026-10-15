@@ -222,7 +222,13 @@ class WalletBridgeWebView @Inject constructor(
         }
         if (!initialized) {
             initialized = true
-            call("init", mapOf("algodServer" to DashboardConfig.ALGOD_URL, "stub" to stubMode), 15_000L, skipReady = true)
+            try {
+                call("init", mapOf("algodServer" to DashboardConfig.ALGOD_URL, "stub" to stubMode), 15_000L, skipReady = true)
+            } catch (e: Throwable) {
+                // Failed, timed out or cancelled: the bridge is not initialised, so the next call must send init again.
+                initialized = false
+                throw e
+            }
         }
     }
 
