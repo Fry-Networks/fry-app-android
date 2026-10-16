@@ -66,11 +66,12 @@ object SignedTxnReader {
         fun signedTxn(): SignedTxn? {
             var txnStart = -1
             var txnEnd = -1
+            val seen = HashSet<String>()
             val entries = mapHeader()
             repeat(entries) {
                 val key = str()
+                if (!seen.add(key)) throw Malformed()
                 if (key == "txn") {
-                    if (txnStart >= 0) throw Malformed()
                     txnStart = pos
                     skip(1)
                     txnEnd = pos

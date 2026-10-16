@@ -3,6 +3,7 @@ package com.frynetworks.fryapp.util
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
 
@@ -98,5 +99,102 @@ class SignedTxnReaderTest {
         val nested = ByteArray(10_000) { 0x91.toByte() } + byteArrayOf(0)
         val blob = byteArrayOf(0x81.toByte(), 0xa3.toByte(), 't'.code.toByte(), 'x'.code.toByte(), 'n'.code.toByte()) + nested
         assertNull(SignedTxnReader.parse(Base64.getEncoder().encodeToString(blob)))
+    }
+
+    // --- hand-built msgpack: every width the reader accepts, and what it must refuse --------------------------------------
+
+    private fun b64(vararg parts: ByteArray) = Base64.getEncoder().encodeToString(parts.fold(ByteArray(0)) { acc, p -> acc + p })
+    private fun fixstr(text: String) = byteArrayOf((0xa0 or text.length).toByte()) + text.toByteArray()
+    private fun str8(text: String) = byteArrayOf(0xd9.toByte(), text.length.toByte()) + text.toByteArray()
+    private fun str16(text: String) = byteArrayOf(0xda.toByte(), 0, text.length.toByte()) + text.toByteArray()
+    private fun bin16(size: Int) = byteArrayOf(0xc5.toByte(), (size shr 8).toByte(), size.toByte()) + ByteArray(size)
+    private fun bin8(size: Int) = byteArrayOf(0xc4.toByte(), size.toByte()) + ByteArray(size)
+    private fun fixmap(n: Int) = byteArrayOf((0x80 or n).toByte())
+    private fun map16(n: Int) = byteArrayOf(0xde.toByte(), 0, n.toByte())
+    private fun uint(v: Long): ByteArray = when {
+        v < 128 -> byteArrayOf(v.toByte())
+        v < 65_536 -> byteArrayOf(0xcd.toByte(), (v shr 8).toByte(), v.toByte())
+        else -> byteArrayOf(0xce.toByte(), (v shr 24).toByte(), (v shr 16).toByte(), (v shr 8).toByte(), v.toByte())
+    }
+    private val uint64Max = byteArrayOf(0xcf.toByte()) + ByteArray(8) { 0xff.toByte() }
+
+    private fun txnMap(vararg entries: ByteArray) = fixmap(entries.size / 2) + entries.fold(ByteArray(0)) { a, e -> a + e }
+
+    @Test
+    fun `map16 headers and str8 and str16 keys are read`() {
+        val txn = map16(2) + str8("fv") + uint(70_000) + str16("lv") + uint(71_000)
+        val blob = map16(2) + fixstr("sig") + bin8(64) + str8("txn") + txn
+        val parsed = SignedTxnReader.parse(b64(blob))
+        assertNotNull(parsed)
+        assertEquals(70_000L, parsed!!.firstValid)
+        assertEquals(71_000L, parsed.lastValid)
+    }
+
+    @Test
+    fun `a bin16 signature is skipped`() {
+        val blob = fixmap(2) + fixstr("sig") + bin16(300) + fixstr("txn") + txnMap(fixstr("lv"), uint(9))
+        assertEquals(9L, SignedTxnReader.parse(b64(blob))?.lastValid)
+    }
+
+    @Test
+    fun `a uint64 above the Long range gives a null last valid round and still parses`() {
+        val blob = fixmap(1) + fixstr("txn") + txnMap(fixstr("fv"), uint(5), fixstr("lv"), uint64Max)
+        val parsed = SignedTxnReader.parse(b64(blob))
+        assertNotNull(parsed)
+        assertNull(parsed!!.lastValid)
+        assertEquals(5L, parsed.firstValid)
+    }
+
+    @Test
+    fun `a rekeyed signature with sgnr is parsed with the same txid`() {
+        val plain = fixmap(2) + fixstr("sig") + bin8(64) + fixstr("txn") + txnMap(fixstr("fv"), uint(5), fixstr("lv"), uint(9))
+        val rekeyed = fixmap(3) + fixstr("sgnr") + bin8(32) + fixstr("sig") + bin8(64) + fixstr("txn") + txnMap(fixstr("fv"), uint(5), fixstr("lv"), uint(9))
+        val a = SignedTxnReader.parse(b64(plain))
+        val b = SignedTxnReader.parse(b64(rekeyed))
+        assertNotNull(b)
+        assertEquals(a!!.txId, b!!.txId)
+        assertEquals(9L, b.lastValid)
+    }
+
+    @Test
+    fun `a duplicate txn key is refused`() {
+        val blob = fixmap(2) + fixstr("txn") + txnMap(fixstr("lv"), uint(9)) + fixstr("txn") + txnMap(fixstr("lv"), uint(99))
+        assertNull(SignedTxnReader.parse(b64(blob)))
+    }
+
+    @Test
+    fun `a duplicate top-level key other than txn is refused`() {
+        val blob = fixmap(3) + fixstr("sig") + bin8(64) + fixstr("sig") + bin8(64) + fixstr("txn") + txnMap(fixstr("lv"), uint(9))
+        assertNull(SignedTxnReader.parse(b64(blob)))
+    }
+
+    @Test
+    fun `a duplicate key inside txn is refused`() {
+        val blob = fixmap(1) + fixstr("txn") + txnMap(fixstr("lv"), uint(9), fixstr("lv"), uint(10))
+        assertNull(SignedTxnReader.parse(b64(blob)))
+    }
+
+    @Test
+    fun `one trailing byte after the signed blob is refused`() {
+        val bytes = Base64.getDecoder().decode(axferSigned)
+        assertNotNull(SignedTxnReader.parse(Base64.getEncoder().encodeToString(bytes)))
+        assertNull(SignedTxnReader.parse(Base64.getEncoder().encodeToString(bytes + byteArrayOf(0))))
+    }
+
+    @Test
+    fun `the raw transaction is exactly the txn span of the blob`() {
+        val bytes = Base64.getDecoder().decode(axferSigned)
+        // fixmap(2) + "sig" (fixstr 4 bytes) + bin8(64) (66 bytes) + "txn" (fixstr 4 bytes): the txn map starts at 1 + 4 + 66 + 4
+        val expected = bytes.copyOfRange(75, bytes.size)
+        assertEquals(0x8b, expected[0].toInt() and 0xff) // fixmap(11): a transfer with a note
+        assertTrue(expected.contentEquals(SignedTxnReader.parse(axferSigned)!!.rawTxn))
+    }
+
+    @Test
+    fun `every shorter prefix of a valid blob gives null`() {
+        val bytes = Base64.getDecoder().decode(paySigned)
+        for (n in 0 until bytes.size) {
+            assertNull("prefix of $n bytes", SignedTxnReader.parse(Base64.getEncoder().encodeToString(bytes.copyOf(n))))
+        }
     }
 }
