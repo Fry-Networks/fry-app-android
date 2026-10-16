@@ -16,6 +16,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.annotation.VisibleForTesting
 import androidx.webkit.WebViewAssetLoader
 import com.frynetworks.fryapp.BuildConfig
 import com.frynetworks.fryapp.network.dashboard.DashboardConfig
@@ -38,6 +39,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.net.URI
 import java.util.UUID
@@ -70,6 +73,18 @@ class WalletBridgeWebView @Inject constructor(
     @Volatile private var webView: WebView? = null
     @Volatile private var ready = CompletableDeferred<Unit>()
     @Volatile private var initialized = false
+
+    /** One init at a time: a caller that arrives while it is in flight waits for it instead of racing ahead of it. */
+    private val initMutex = Mutex()
+
+    /** Counts page resets, so an init that finished across a crash cannot mark the replacement page initialised. */
+    @Volatile private var resets = 0
+
+    private val crashTimes = ArrayDeque<Long>()
+    @Volatile private var reattachQueued = false
+
+    @VisibleForTesting
+    internal var clock: () -> Long = System::currentTimeMillis
     @Volatile private var currentVendor: WalletVendor? = null
     @Volatile var stubMode: Boolean = false
 
@@ -147,13 +162,41 @@ class WalletBridgeWebView @Inject constructor(
     private fun resetAfterCrash(dead: WebView) {
         (dead.parent as? ViewGroup)?.removeView(dead)
         runCatching { dead.destroy() }
+        // A late callback for an older view must not tear down the newer one that replaced it.
+        val current = webView
+        if (current != null && dead !== current) return
         webView = null
         initialized = false
+        resets++
         val boom = BridgeException(BridgeErrorCode.BRIDGE_RESET, "The wallet bridge was reset")
         pending.values.forEach { it.completeExceptionally(boom) }
         pending.clear()
+        val old = ready
         ready = CompletableDeferred()
-        _generation.update { it + 1 }
+        // Callers parked on the old page fail now instead of waiting out the ready timeout.
+        old.completeExceptionally(boom)
+        scheduleReattach()
+    }
+
+    /** Bumps [generation] (last step of a reset); after repeated quick crashes the bump is delayed, doubling up to a cap. */
+    private fun scheduleReattach() {
+        val now = clock()
+        val delayMillis = synchronized(crashTimes) {
+            crashTimes.removeAll { now - it >= CRASH_WINDOW_MS }
+            crashTimes.addLast(now)
+            val crashes = crashTimes.size
+            if (crashes <= FREE_CRASHES) 0L else (REATTACH_BACKOFF_MS shl (crashes - FREE_CRASHES - 1).coerceAtMost(10)).coerceAtMost(REATTACH_BACKOFF_MAX_MS)
+        }
+        if (delayMillis == 0L) {
+            _generation.update { it + 1 }
+            return
+        }
+        if (reattachQueued) return
+        reattachQueued = true
+        mainHandler.postDelayed({
+            reattachQueued = false
+            _generation.update { it + 1 }
+        }, delayMillis)
     }
 
     inner class NativeInterface {
@@ -231,14 +274,12 @@ class WalletBridgeWebView @Inject constructor(
         } catch (e: TimeoutCancellationException) {
             throw BridgeException(BridgeErrorCode.TIMEOUT, "The wallet bridge did not become ready")
         }
-        if (!initialized) {
-            initialized = true
-            try {
+        initMutex.withLock {
+            if (!initialized) {
+                val epoch = resets
+                // Failed, timed out or cancelled: the flag stays false, so the next call sends init again.
                 call("init", mapOf("algodServer" to DashboardConfig.ALGOD_URL, "stub" to stubMode), 15_000L, skipReady = true)
-            } catch (e: Throwable) {
-                // Failed, timed out or cancelled: the bridge is not initialised, so the next call must send init again.
-                initialized = false
-                throw e
+                if (resets == epoch) initialized = true
             }
         }
     }
@@ -331,6 +372,10 @@ class WalletBridgeWebView @Inject constructor(
         private const val READY_TIMEOUT_MS = 20_000L
         private const val CONNECT_TIMEOUT_MS = 120_000L
         private const val SIGN_TIMEOUT_MS = 180_000L
+        private const val CRASH_WINDOW_MS = 60_000L
+        private const val FREE_CRASHES = 3
+        private const val REATTACH_BACKOFF_MS = 1_000L
+        private const val REATTACH_BACKOFF_MAX_MS = 30_000L
 
         private val SCHEME = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
         private val PASS_THROUGH_SCHEMES = setOf("http", "https", "wc")
