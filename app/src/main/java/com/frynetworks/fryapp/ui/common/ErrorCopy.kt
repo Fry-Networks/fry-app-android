@@ -9,6 +9,9 @@ object ErrorCopy {
 
     const val GENERIC = "Something went wrong. Please try again."
 
+    /** For a TXN_PENDING failure that carries no message of its own (a specific message, such as the support instructions, always wins). */
+    private const val TXN_PENDING_COPY = "This transaction is still pending. Try again shortly."
+
     private val copy: Map<String, String> = mapOf(
         "NO_REWARDS" to "There are no claimable rewards for this miner yet.",
         "REWARD_ON_HOLD" to "These rewards are on hold. Check the miner's status on the dashboard.",
@@ -43,12 +46,16 @@ object ErrorCopy {
         "INVALID_ADDRESS" to "That is not a valid Algorand address.",
     )
 
-    /** Copy for [code]; falls back to [serverMessage] (when non-blank) then [GENERIC]. */
+    /** Copy for [code]; falls back to [serverMessage] (when non-blank), then the TXN_PENDING line for that code, then [GENERIC]. */
     fun forCode(code: String?, serverMessage: String? = null): String {
         val known = code?.let { copy[it] }
         if (known != null) return known
         val server = serverMessage?.trim()
-        return if (!server.isNullOrEmpty()) server else GENERIC
+        return when {
+            !server.isNullOrEmpty() -> server
+            code == "TXN_PENDING" -> TXN_PENDING_COPY
+            else -> GENERIC
+        }
     }
 
     fun isKnown(code: String?): Boolean = code != null && copy.containsKey(code)
