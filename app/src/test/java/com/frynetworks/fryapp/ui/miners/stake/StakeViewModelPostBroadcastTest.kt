@@ -305,7 +305,7 @@ class StakeViewModelPostBroadcastTest {
         override suspend fun get(url: String): Response<ResponseBody> = when {
             url.endsWith("/health") ->
                 Response.success("""{"db-available":true,"is-migrating":false,"message":"$round","round":$round,"version":"3.10.0-ndly"}""".toResponseBody(json))
-            else -> Response.error(404, """{"message":"no transaction found for transaction id"}""".toResponseBody(json))
+            else -> Response.error(404, """{"message":"no transaction found for transaction id: ${url.substringAfterLast('/')}"}""".toResponseBody(json))
         }
     }
 

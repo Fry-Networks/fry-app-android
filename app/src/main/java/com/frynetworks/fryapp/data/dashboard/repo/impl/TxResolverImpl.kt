@@ -57,7 +57,7 @@ class TxResolverImpl(
             TxStatus.Absent, TxStatus.Unknown -> Unit
         }
         val polled = coroutineScope {
-            indexerUrls.map { base -> async { get("$base/v2/transactions/$txId") to get("$base/health") } }.awaitAll()
+            indexerUrls.map { base -> async { get("$base/v2/transactions/$txId", mustName = txId) to get("$base/health") } }.awaitAll()
         }
         for ((tx, _) in polled) {
             val json = (tx as? Reply.Ok)?.json ?: continue
@@ -116,9 +116,10 @@ class TxResolverImpl(
     }
 
     /** One GET, never throwing and never longer than the call timeout. */
-    private suspend fun get(url: String): Reply = withContext(dispatcher) {
+    /** [mustName], when given, is a txid a 404 message has to name to count as a definitive not-found. */
+    private suspend fun get(url: String, mustName: String? = null): Reply = withContext(dispatcher) {
         try {
-            withTimeoutOrNull(callTimeoutMillis) { read(url) } ?: Reply.Bad
+            withTimeoutOrNull(callTimeoutMillis) { read(url, mustName) } ?: Reply.Bad
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -126,14 +127,17 @@ class TxResolverImpl(
         }
     }
 
-    private suspend fun read(url: String): Reply {
+    private suspend fun read(url: String, mustName: String?): Reply {
         val response = indexer.get(url)
         try {
             val text = readCapped(if (response.isSuccessful) response.body() else response.errorBody()) ?: return Reply.Bad
             val json = runCatching { JsonParser.parseString(text) }.getOrNull()?.takeIf { it.isJsonObject }?.asJsonObject ?: return Reply.Bad
             return when (response.code()) {
                 200 -> Reply.Ok(json)
-                404 -> if (json.strOrNull("message")?.contains("no transaction found") == true) Reply.NotFound else Reply.Bad
+                404 -> {
+                    val message = json.strOrNull("message")
+                    if (message?.contains("no transaction found") == true && (mustName == null || message.contains(mustName))) Reply.NotFound else Reply.Bad
+                }
                 else -> Reply.Bad
             }
         } finally {

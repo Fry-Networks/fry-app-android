@@ -304,6 +304,12 @@ class TxResolverImplTest {
     }
 
     @Test
+    fun `a 404 whose message names a different txid is not a definitive not-found`() = runTest {
+        a.txBody = """{"message":"no transaction found for transaction id: ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"}"""
+        assertEquals(TxResolution.Unknown, resolve())
+    }
+
+    @Test
     fun `a JSON 404 with another message is not a definitive not-found`() = runTest {
         a.txBody = """{"message":"endpoint not found"}"""
         assertEquals(TxResolution.Unknown, resolve())
