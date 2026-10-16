@@ -12,6 +12,9 @@ class PendingTransferStoreTest {
     class FakePrefs : SharedPreferences {
         val map = HashMap<String, Any?>()
         var commitResult = true
+
+        /** The next this many commits fail, then they succeed again. */
+        var failCommits = 0
         var applyCalls = 0
         var commitCalls = 0
 
@@ -38,6 +41,10 @@ class PendingTransferStoreTest {
             override fun clear() = apply { removes += map.keys }
             override fun commit(): Boolean {
                 commitCalls++
+                if (failCommits > 0) {
+                    failCommits--
+                    return false
+                }
                 if (!commitResult) return false
                 map.putAll(puts)
                 removes.forEach { map.remove(it) }
@@ -192,5 +199,74 @@ class PendingTransferStoreTest {
         assertEquals(PendingLookup.None, s.find(b, TransferKind.STAKE))
         assertTrue(s.remove(a, TransferKind.STAKE, miner, "registration"))
         assertEquals(PendingLookup.None, s.find(a, TransferKind.STAKE))
+    }
+
+    @Test
+    fun `putNew writes when nothing is there`() {
+        val s = store()
+        assertTrue(s.putNew(record()))
+        assertTrue(s.find(a, TransferKind.STAKE) is PendingLookup.Found)
+    }
+
+    @Test
+    fun `putNew refuses a second stake record of the same sender even for another miner`() {
+        val s = store()
+        assertTrue(s.putNew(record(minerKey = miner, txId = "FIRST")))
+        assertFalse(s.putNew(record(minerKey = "FEM-OTHER0000000000000000000000000000", txId = "SECOND")))
+        assertEquals("FIRST", (s.find(a, TransferKind.STAKE) as PendingLookup.Found).record.txId)
+    }
+
+    @Test
+    fun `putNew refuses the same key with a different txid and leaves the first intact`() {
+        val s = store()
+        assertTrue(s.putNew(record(kind = TransferKind.CLAIM_FEE, row = "3", txId = "FIRST")))
+        assertFalse(s.putNew(record(kind = TransferKind.CLAIM_FEE, row = "3", txId = "SECOND")))
+        assertEquals("FIRST", (s.get(a, TransferKind.CLAIM_FEE, miner, "3") as PendingLookup.Found).record.txId)
+    }
+
+    @Test
+    fun `putNew allows another claim row and another sender`() {
+        val s = store()
+        assertTrue(s.putNew(record(kind = TransferKind.CLAIM_FEE, row = "3")))
+        assertTrue(s.putNew(record(kind = TransferKind.CLAIM_FEE, row = "4")))
+        assertTrue(s.putNew(record(sender = b)))
+    }
+
+    @Test
+    fun `putNew reports a failed commit and stores nothing`() {
+        val prefs = FakePrefs().also { it.commitResult = false }
+        assertFalse(store(prefs).putNew(record()))
+        assertTrue(prefs.map.isEmpty())
+    }
+
+    @Test
+    fun `a permanently blocked key reads as Unreadable and cannot be removed in this process`() {
+        val prefs = FakePrefs()
+        val s = store(prefs)
+        s.put(record())
+        s.blockPermanently(a, TransferKind.STAKE, miner, "registration")
+        assertEquals(PendingLookup.Unreadable, s.find(a, TransferKind.STAKE))
+        assertEquals(PendingLookup.Unreadable, s.get(a, TransferKind.STAKE, miner, "registration"))
+        assertFalse(s.remove(a, TransferKind.STAKE, miner, "registration"))
+        assertTrue(prefs.map.isNotEmpty())
+        assertEquals(PendingLookup.None, s.find(b, TransferKind.STAKE))
+    }
+
+    @Test
+    fun `a permanent block holds even when the record was never written`() {
+        val s = store()
+        s.blockPermanently(a, TransferKind.CLAIM_FEE, miner, "all")
+        assertEquals(PendingLookup.Unreadable, s.get(a, TransferKind.CLAIM_FEE, miner, "all"))
+        assertFalse(s.putNew(record(kind = TransferKind.CLAIM_FEE, row = "all")))
+    }
+
+    @Test
+    fun `the in-memory store has the same putNew and block behaviour`() {
+        val s = InMemoryPendingTransferStore()
+        assertTrue(s.putNew(record()))
+        assertFalse(s.putNew(record(txId = "X")))
+        s.blockPermanently(a, TransferKind.STAKE, miner, "registration")
+        assertEquals(PendingLookup.Unreadable, s.find(a, TransferKind.STAKE))
+        assertFalse(s.remove(a, TransferKind.STAKE, miner, "registration"))
     }
 }

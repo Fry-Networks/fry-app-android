@@ -61,21 +61,42 @@ interface PendingTransferStore {
 
     fun get(sender: String, kind: TransferKind, minerKey: String, row: String): PendingLookup
 
+    /** Writes (or overwrites) the record under its own key. */
     fun put(record: PendingTransfer): Boolean
 
+    /**
+     * Writes [record] only when nothing is recorded yet, atomically with every other call: for a stake any record of the sender
+     * (every miner and context) refuses it, for a claim fee a record under the same key does. False = refused or not committed.
+     */
+    fun putNew(record: PendingTransfer): Boolean
+
     fun remove(sender: String, kind: TransferKind, minerKey: String, row: String): Boolean
+
+    /**
+     * For the rest of this process: this key reads as [PendingLookup.Unreadable], cannot be removed and takes no [putNew]. Used when
+     * the record cannot be trusted and could not be rewritten, so no transfer may be rebuilt.
+     */
+    fun blockPermanently(sender: String, kind: TransferKind, minerKey: String, row: String)
 }
 
 private fun storageKey(sender: String, kind: TransferKind, minerKey: String, row: String) = "$sender|${kind.name}|$minerKey|$row"
 
 private fun storagePrefix(sender: String, kind: TransferKind) = "$sender|${kind.name}|"
 
+/** True when [blocked] holds the record's own key, or (for a stake, which blocks every miner) any key of its sender. */
+private fun isBlocked(record: PendingTransfer, blocked: Set<String>): Boolean = when (record.kind) {
+    TransferKind.STAKE -> blocked.any { it.startsWith(storagePrefix(record.sender, record.kind)) }
+    TransferKind.CLAIM_FEE -> storageKey(record.sender, record.kind, record.minerKey, record.row) in blocked
+}
+
 /** SharedPreferences "fry_pending_transfer". Every write and clear is a synchronous `commit()`, never `apply()`. */
 class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : PendingTransferStore {
+    private val blocked = HashSet<String>()
 
     @Synchronized
     override fun find(sender: String, kind: TransferKind): PendingLookup {
         val prefix = storagePrefix(sender, kind)
+        if (blocked.any { it.startsWith(prefix) }) return PendingLookup.Unreadable
         var found: PendingTransfer? = null
         for ((key, value) in prefs.all) {
             if (!key.startsWith(prefix)) continue
@@ -88,6 +109,7 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
     @Synchronized
     override fun get(sender: String, kind: TransferKind, minerKey: String, row: String): PendingLookup {
         val key = storageKey(sender, kind, minerKey, row)
+        if (key in blocked) return PendingLookup.Unreadable
         if (!prefs.contains(key)) return PendingLookup.None
         return decode(key, prefs.getString(key, null))?.let { PendingLookup.Found(it) } ?: PendingLookup.Unreadable
     }
@@ -97,8 +119,28 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
         prefs.edit().putString(storageKey(record.sender, record.kind, record.minerKey, record.row), encode(record).toString()).commit()
 
     @Synchronized
-    override fun remove(sender: String, kind: TransferKind, minerKey: String, row: String): Boolean =
-        prefs.edit().remove(storageKey(sender, kind, minerKey, row)).commit()
+    override fun putNew(record: PendingTransfer): Boolean {
+        val key = storageKey(record.sender, record.kind, record.minerKey, record.row)
+        if (isBlocked(record, blocked)) return false
+        val taken = when (record.kind) {
+            TransferKind.STAKE -> prefs.all.keys.any { it.startsWith(storagePrefix(record.sender, record.kind)) }
+            TransferKind.CLAIM_FEE -> prefs.contains(key)
+        }
+        if (taken) return false
+        return prefs.edit().putString(key, encode(record).toString()).commit()
+    }
+
+    @Synchronized
+    override fun remove(sender: String, kind: TransferKind, minerKey: String, row: String): Boolean {
+        val key = storageKey(sender, kind, minerKey, row)
+        if (key in blocked) return false
+        return prefs.edit().remove(key).commit()
+    }
+
+    @Synchronized
+    override fun blockPermanently(sender: String, kind: TransferKind, minerKey: String, row: String) {
+        blocked += storageKey(sender, kind, minerKey, row)
+    }
 
     private fun encode(r: PendingTransfer) = JsonObject().apply {
         addProperty("schemaVersion", r.schemaVersion)
@@ -154,16 +196,21 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
 /** Same contract without persistence: the default for a view model that is given no store. */
 class InMemoryPendingTransferStore : PendingTransferStore {
     private val records = LinkedHashMap<String, PendingTransfer>()
+    private val blocked = HashSet<String>()
 
     @Synchronized
     override fun find(sender: String, kind: TransferKind): PendingLookup {
         val prefix = storagePrefix(sender, kind)
+        if (blocked.any { it.startsWith(prefix) }) return PendingLookup.Unreadable
         return records.entries.firstOrNull { it.key.startsWith(prefix) }?.let { PendingLookup.Found(it.value) } ?: PendingLookup.None
     }
 
     @Synchronized
-    override fun get(sender: String, kind: TransferKind, minerKey: String, row: String): PendingLookup =
-        records[storageKey(sender, kind, minerKey, row)]?.let { PendingLookup.Found(it) } ?: PendingLookup.None
+    override fun get(sender: String, kind: TransferKind, minerKey: String, row: String): PendingLookup {
+        val key = storageKey(sender, kind, minerKey, row)
+        if (key in blocked) return PendingLookup.Unreadable
+        return records[key]?.let { PendingLookup.Found(it) } ?: PendingLookup.None
+    }
 
     @Synchronized
     override fun put(record: PendingTransfer): Boolean {
@@ -172,8 +219,28 @@ class InMemoryPendingTransferStore : PendingTransferStore {
     }
 
     @Synchronized
-    override fun remove(sender: String, kind: TransferKind, minerKey: String, row: String): Boolean {
-        records.remove(storageKey(sender, kind, minerKey, row))
+    override fun putNew(record: PendingTransfer): Boolean {
+        val key = storageKey(record.sender, record.kind, record.minerKey, record.row)
+        if (isBlocked(record, blocked)) return false
+        val taken = when (record.kind) {
+            TransferKind.STAKE -> records.keys.any { it.startsWith(storagePrefix(record.sender, record.kind)) }
+            TransferKind.CLAIM_FEE -> key in records
+        }
+        if (taken) return false
+        records[key] = record
         return true
+    }
+
+    @Synchronized
+    override fun remove(sender: String, kind: TransferKind, minerKey: String, row: String): Boolean {
+        val key = storageKey(sender, kind, minerKey, row)
+        if (key in blocked) return false
+        records.remove(key)
+        return true
+    }
+
+    @Synchronized
+    override fun blockPermanently(sender: String, kind: TransferKind, minerKey: String, row: String) {
+        blocked += storageKey(sender, kind, minerKey, row)
     }
 }
