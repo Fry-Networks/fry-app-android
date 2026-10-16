@@ -11,7 +11,17 @@ import com.frynetworks.fryapp.data.dashboard.repo.MinerRepository
 import com.frynetworks.fryapp.data.dashboard.repo.RewardsRepository
 import com.frynetworks.fryapp.data.dashboard.repo.StakeRepository
 import com.frynetworks.fryapp.data.dashboard.repo.StakeSubmitPayload
+import com.frynetworks.fryapp.data.dashboard.repo.FailClosedTxResolver
+import com.frynetworks.fryapp.data.dashboard.repo.TxResolution
+import com.frynetworks.fryapp.data.dashboard.repo.TxResolver
 import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
+import com.frynetworks.fryapp.data.pending.InMemoryPendingTransferStore
+import com.frynetworks.fryapp.data.pending.PendingLookup
+import com.frynetworks.fryapp.data.pending.PendingTransfer
+import com.frynetworks.fryapp.data.pending.PendingTransferStore
+import com.frynetworks.fryapp.data.pending.TransferKind
+import com.frynetworks.fryapp.data.pending.TransferState
+import com.frynetworks.fryapp.util.SignedTxnReader
 import com.frynetworks.fryapp.domain.FryAsset
 import com.frynetworks.fryapp.domain.MinerFamily
 import com.frynetworks.fryapp.domain.StakeContext
@@ -50,19 +60,37 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
-private data class PendingBroadcast(
-    val txId: String,
-    val minerKey: String,
-    val context: StakeContext,
-    val address: String,
-    val plan: StakeState.Ready,
-    /** Upper bound of the last round the transfer can still land in; null = unknown, which never allows a rebuild. */
-    val lastValid: Long?,
-)
+/** The durable record of a stake transfer that may be on the network, with the context it was made for. */
+private data class PendingBroadcast(val transfer: PendingTransfer, val context: StakeContext) {
+    /** null for a transfer handed to submit with no id to resume from (state POSSIBLY_BROADCAST). */
+    val txId: String? get() = transfer.txId
+    val minerKey: String get() = transfer.minerKey
+    val address: String get() = transfer.sender
+    val amount: BigDecimal get() = BigDecimal(transfer.amount)
+
+    /** Last round the transfer can still land in, decoded from the signed bytes; null = unknown, which never allows a rebuild. */
+    val lastValid: Long? get() = transfer.lastValid
+}
+
+private sealed interface Pending {
+    data object None : Pending
+
+    /** A record exists that cannot be understood: blocks like any other. */
+    data object Unreadable : Pending
+
+    data class Found(val sent: PendingBroadcast) : Pending
+}
 
 private const val CODE_TXN_PENDING = "TXN_PENDING"
+private const val CODE_RECORD_FAILED = "TXN_RECORD_FAILED"
 private const val UNKNOWN_BROADCAST_MESSAGE = "A previous stake transfer may have been sent. Check your wallet before trying again."
-private const val MAX_TXN_LIFE = 1_000L
+private const val RECORD_FAILED_MESSAGE = "The stake could not be prepared safely on this phone, so nothing was sent. Try again."
+
+/** The record could not be written, so the transfer must not be submitted. */
+private class RecordNotSaved : RuntimeException()
+
+/** The bridge's submit answered with another transaction id than the one the signed bytes give. */
+private class TxIdMismatch : RuntimeException()
 
 /** Rows of the sheet's stage list (`stake_stage_<n>`, 1-based). */
 enum class StakeStage(val label: String) {
@@ -150,6 +178,10 @@ class StakeViewModel(
     private val openUri: (String) -> Unit,
     /** Held from the first signature to the dashboard record: an app update then would orphan an on-chain transfer. */
     private val inhibitor: InstallInhibitor? = null,
+    /** Durable record of a transfer that may be on the network; survives process death, logout and account switches. */
+    private val store: PendingTransferStore = InMemoryPendingTransferStore(),
+    /** What became of a recorded transfer; the default can never say it is gone, so it never allows a rebuild. */
+    private val resolver: TxResolver = FailClosedTxResolver,
 ) : ViewModel() {
 
     @Inject
@@ -163,21 +195,16 @@ class StakeViewModel(
         clock: ServerClock,
         launcher: ExternalUriLauncher,
         inhibitor: InstallInhibitor,
-    ) : this(miners, rewards, stakes, algod, bridge, session, clock, openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor)
+        store: PendingTransferStore,
+        resolver: TxResolver,
+    ) : this(
+        miners, rewards, stakes, algod, bridge, session, clock,
+        openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor, store = store, resolver = resolver,
+    )
 
     private val ui = MutableStateFlow(StakeUiState())
     val uiState: StateFlow<StakeUiState> = ui.asStateFlow()
     private var job: Job? = null
-
-    /** The stake transfer that may be on the network and is not recorded yet; survives [start], cleared on Done or when proven dead. */
-    private var pendingBroadcast: PendingBroadcast? = null
-
-    /**
-     * A transfer was handed to submit without a known transaction id (decoding the built transaction gave none). If
-     * submit then fails nothing can be resumed or ruled out, so every new stake is refused for this view model's life;
-     * a txId from a successful submit turns it into a normal [pendingBroadcast].
-     */
-    private var unknownBroadcast = false
 
     init {
         viewModelScope.launch {
@@ -191,7 +218,36 @@ class StakeViewModel(
         if (job?.isActive == true && !ui.value.canCancel) return
         job?.cancel()
         ui.value = StakeUiState(minerKey = minerKey, context = context, byod = byod, loading = true, lastWalletUri = ui.value.lastWalletUri)
-        job = viewModelScope.launch { if (ensureConnected(reconnectOnly = true)) loadAmount() }
+        job = viewModelScope.launch {
+            if (resumeStored(minerKey, context)) return@launch
+            if (ensureConnected(reconnectOnly = true)) loadAmount()
+        }
+    }
+
+    /**
+     * A transfer recorded for this sender (before a crash, a logout, an update) is continued from the sheet's first moment,
+     * never rebuilt. True when it handled the open; false when there is no record or it was proven dead and cleared.
+     */
+    private suspend fun resumeStored(minerKey: String, context: StakeContext): Boolean {
+        val address = address() ?: return false
+        return when (val pending = pendingFor(address)) {
+            Pending.None -> false
+            Pending.Unreadable -> {
+                blockedUnknown()
+                true
+            }
+            is Pending.Found -> {
+                val sent = pending.sent
+                if (sent.minerKey != minerKey || sent.context != context) {
+                    stillPending(sent, "Another stake transaction is still being processed. Retry to finish it first.")
+                    true
+                } else {
+                    var outcome = Resumed.HANDLED
+                    holdingInstalls { outcome = resume(sent) }
+                    outcome == Resumed.HANDLED
+                }
+            }
+        }
     }
 
     /** Verification only: switch between the `one` (1 day) and `two` (180 day) tiers. */
@@ -244,22 +300,20 @@ class StakeViewModel(
     }
 
     fun retry() {
-        if (unknownBroadcast) {
-            // Nothing to resume from and nothing may be built: keep saying so.
-            ui.update {
-                it.copy(
-                    state = StakeState.Failed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE, recoverable = true),
-                    loading = false,
-                    failedStage = StakeStage.SUBMIT.ordinal,
-                )
+        val address = address()
+        if (address != null) {
+            when (val pending = pendingFor(address)) {
+                Pending.Unreadable -> {
+                    blockedUnknown()
+                    return
+                }
+                is Pending.Found -> {
+                    job?.cancel()
+                    job = viewModelScope.launch { holdingInstalls { if (resume(pending.sent) == Resumed.REBUILD) restartFresh() } }
+                    return
+                }
+                Pending.None -> Unit
             }
-            return
-        }
-        val pending = pendingBroadcast
-        if (pending != null) {
-            job?.cancel()
-            job = viewModelScope.launch { holdingInstalls { if (resume(pending) == Resumed.REBUILD) restartFresh() } }
-            return
         }
         val key = ui.value.minerKey ?: return
         val context = ui.value.context ?: return
@@ -405,20 +459,23 @@ class StakeViewModel(
             return
         }
 
-        if (unknownBroadcast) {
-            // A transfer without a known id may be on the network: build nothing until the user has checked.
-            dispatch(StakeEvent.PrecheckFailed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE))
-            return
-        }
-
         // A transfer for this stake may already be on the network: continue it, never send a second one.
-        pendingBroadcast?.let { pending ->
-            if (pending.minerKey != key || pending.context != context || pending.address != address) {
-                // Another stake is unresolved: fail closed, show its txId, build nothing (Retry resumes it).
-                stillPending(pending, "Another stake transaction is still being processed. Retry to finish it first.")
+        when (val pending = pendingFor(address)) {
+            Pending.None -> Unit
+            Pending.Unreadable -> {
+                // Something is recorded that cannot be understood: build nothing until the user has checked.
+                dispatch(StakeEvent.PrecheckFailed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE))
                 return
             }
-            if (resume(pending) == Resumed.HANDLED) return
+            is Pending.Found -> {
+                val sent = pending.sent
+                if (sent.minerKey != key || sent.context != context) {
+                    // Another stake is unresolved: fail closed, show its txId, build nothing (Retry resumes it).
+                    stillPending(sent, "Another stake transaction is still being processed. Retry to finish it first.")
+                    return
+                }
+                if (resume(sent) == Resumed.HANDLED) return
+            }
         }
 
         try {
@@ -451,60 +508,83 @@ class StakeViewModel(
         )
         notePayload["timestamp"] = isoTimestamp(clock.nowMillis())
         val note = JsJson.stringify(notePayload)
-        var broadcast: PendingBroadcast? = null
-        var submitting = false
-        val txId = try {
+        var recorded: PendingTransfer? = null
+        val (transfer, txId) = try {
             val txn = bridge.buildAssetTransfer(address, StakeRepository.STAKE_WALLET, plan.asset.id, amountMicro, note)
             val builtRound = safely { algod.currentRound() }
             val summary = safely { bridge.decodeTxn(txn) }
-            // The real bridge always reports the id; without one, mark the broadcast unknown before signing.
-            if (summary?.txId == null) unknownBroadcast = true
             val signed = signSingle(txn)
-            // From here the transfer can reach the network whatever submit reports back, so its id (the hash of the
-            // built transaction) is recorded first: every failure from submit onward resumes from it, never rebuilds.
-            summary?.txId?.let {
-                val recorded = PendingBroadcast(it, key, context, address, plan, lastValidBound(summary.lastValid, builtRound))
-                record(recorded)
-                broadcast = recorded
-            }
-            submitting = true
-            bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()
+            // The id and rounds come from the signed bytes themselves. Only when they cannot be read is the bridge's decode of
+            // the unsigned transaction used for the id (and then without a last valid round, so it never allows a rebuild);
+            // with neither, the record is POSSIBLY_BROADCAST and always blocks.
+            val parsed = SignedTxnReader.parse(signed)
+            val knownId = parsed?.txId ?: summary?.txId
+            val toSend = PendingTransfer(
+                kind = TransferKind.STAKE,
+                sender = address,
+                minerKey = key,
+                row = contextCode(context),
+                assetId = plan.asset.id,
+                amount = plan.amount.toPlainString(),
+                amountMicro = amountMicro,
+                receiver = StakeRepository.STAKE_WALLET,
+                txId = knownId,
+                firstValid = parsed?.firstValid,
+                lastValid = parsed?.lastValid,
+                builtRound = builtRound,
+                state = if (knownId == null) TransferState.POSSIBLY_BROADCAST else TransferState.PRE_SUBMIT,
+                createdAt = clock.nowMillis(),
+            )
+            // From here the transfer can reach the network whatever submit reports back: it is on disk first, and a record that
+            // cannot be written means nothing is sent.
+            if (!store.put(toSend)) throw RecordNotSaved()
+            recorded = toSend
+            val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()
                 ?: throw BridgeException(BridgeErrorCode.UNKNOWN, "The bridge returned no transaction id")
-        } catch (e: CancellationException) {
-            if (!submitting) unknownBroadcast = false
-            throw e
+            if (toSend.txId != null && returned != toSend.txId) throw TxIdMismatch()
+            toSend to returned
+        } catch (e: RecordNotSaved) {
+            clearSummary()
+            dispatch(StakeEvent.SubmitFailed(CODE_RECORD_FAILED, RECORD_FAILED_MESSAGE))
+            return
+        } catch (e: TxIdMismatch) {
+            // Neither id can be trusted: keep the record, without an id, so only the account search can resolve it.
+            recorded?.let { store.put(it.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)) }
+            dispatch(StakeEvent.SubmitFailed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE))
+            return
         } catch (e: BridgeException) {
             clearSummary()
-            // Failing before submit means nothing was sent, so the unknown-broadcast mark is lifted again.
-            if (!submitting) unknownBroadcast = false
-            if (e.code == BridgeErrorCode.USER_REJECTED && broadcast == null && !unknownBroadcast) {
+            val r = recorded
+            if (e.code == BridgeErrorCode.USER_REJECTED && r == null) {
                 dispatch(StakeEvent.SignRejected)
-            } else if (unknownBroadcast) {
+            } else if (r != null && r.txId == null) {
                 dispatch(StakeEvent.SubmitFailed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE))
             } else {
-                dispatch(StakeEvent.SubmitFailed(e.code.name, e.message ?: "", broadcast?.txId))
+                dispatch(StakeEvent.SubmitFailed(e.code.name, e.message ?: "", r?.txId))
             }
             return
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             clearSummary()
-            if (!submitting) unknownBroadcast = false
-            if (unknownBroadcast) {
+            val r = recorded
+            if (r != null && r.txId == null) {
                 dispatch(StakeEvent.SubmitFailed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE))
             } else {
-                dispatch(StakeEvent.SubmitFailed(e.errorCode(), e.message ?: "", broadcast?.txId))
+                dispatch(StakeEvent.SubmitFailed(e.errorCode(), e.message ?: "", r?.txId))
             }
             return
         }
-        unknownBroadcast = false // submit gave the id: from here the normal resume rules apply
-        val sent = (broadcast ?: PendingBroadcast(txId, key, context, address, plan, null)).copy(txId = txId)
-        record(sent)
+        // submit gave the id: a transfer without one is identified by it from here on.
+        val identified = if (transfer.txId == null) transfer.copy(txId = txId, state = TransferState.PRE_SUBMIT).also { store.put(it) } else transfer
+        val sent = PendingBroadcast(identified, context)
         dispatch(StakeEvent.Submitted(txId))
         afterBroadcast(sent, Confirmation.WAIT)
     }
 
     /** Waits for confirmation (unless known), verifies with the dashboard and records the stake; every failure carries the txId. */
     private suspend fun afterBroadcast(sent: PendingBroadcast, confirmation: Confirmation) {
-        val txId = sent.txId
+        val txId = sent.txId ?: return blockedUnknown()
         if (confirmation == Confirmation.WAIT) {
             try {
                 algod.waitConfirmed(txId, WAIT_ROUNDS)
@@ -531,10 +611,10 @@ class StakeViewModel(
         try {
             val result = stakes.submit(
                 sent.context,
-                StakeSubmitPayload(address = sent.address, minerKey = sent.minerKey, txId = txId, amount = sent.plan.amount, assetId = sent.plan.asset.id),
+                StakeSubmitPayload(address = sent.address, minerKey = sent.minerKey, txId = txId, amount = sent.amount, assetId = sent.transfer.assetId),
             )
-            // Cleared before the state moves on, so nothing can resume and record this stake a second time.
-            pendingBroadcast = null
+            // Cleared before the state moves on, so nothing can resume and record this stake a second time (a failed clear is retried once).
+            if (!clear(sent)) clear(sent)
             dispatch(StakeEvent.Recorded(result.txId ?: txId, result.waived))
             runCatching { miners.refreshDetail(sent.minerKey) }
         } catch (e: CancellationException) {
@@ -551,11 +631,14 @@ class StakeViewModel(
 
     /**
      * Continues a stake whose transfer may already be on the network, from its transaction id. A new transfer is
-     * allowed ([Resumed.REBUILD]) only when the transaction is provably dead: reported absent AND past its last valid round.
+     * allowed ([Resumed.REBUILD]) only when the resolver proves the transaction dead and the record was cleared:
+     * algod's pool and both indexers have never heard of it and every round is past its last valid round.
      * Anything unknown keeps the failure, with the txId, and builds nothing.
      */
     private suspend fun resume(sent: PendingBroadcast): Resumed {
-        when (safely { algod.txStatus(sent.txId) } ?: TxStatus.Unknown) {
+        val txId = sent.txId ?: return resumeUnidentified(sent)
+        val pool = safely { algod.txStatus(txId) } ?: TxStatus.Unknown
+        when (pool) {
             is TxStatus.Confirmed -> {
                 showSubmitting(sent)
                 afterBroadcast(sent, Confirmation.CONFIRMED)
@@ -564,27 +647,66 @@ class StakeViewModel(
                 showSubmitting(sent)
                 afterBroadcast(sent, Confirmation.WAIT)
             }
-            TxStatus.Absent -> {
-                val round = safely { algod.currentRound() }
-                val lastValid = sent.lastValid
-                if (round != null && lastValid != null && round > lastValid) {
-                    pendingBroadcast = null
-                    return Resumed.REBUILD
-                }
-                stillPending(sent)
-            }
             is TxStatus.Rejected -> stillPending(sent)
-            // The pool forgets a confirmed transaction after a while: ask the dashboard before giving up, but never build.
-            TxStatus.Unknown -> {
-                showSubmitting(sent)
-                afterBroadcast(sent, Confirmation.UNKNOWN)
+            // The pool forgets a confirmed transaction after a while: the indexers know it, or know it is gone.
+            TxStatus.Absent, TxStatus.Unknown -> when (verdict(sent, txId)) {
+                is TxResolution.Confirmed -> {
+                    showSubmitting(sent)
+                    afterBroadcast(sent, Confirmation.CONFIRMED)
+                }
+                TxResolution.Absent -> {
+                    if (clear(sent)) return Resumed.REBUILD
+                    stillPending(sent)
+                }
+                // Ask the dashboard before giving up, but never build.
+                TxResolution.Unknown -> if (pool == TxStatus.Absent) {
+                    stillPending(sent)
+                } else {
+                    showSubmitting(sent)
+                    afterBroadcast(sent, Confirmation.UNKNOWN)
+                }
             }
         }
         return Resumed.HANDLED
     }
 
+    /** The resolver's answer, with Absent refused when the last valid round is unknown and anything about another txid ignored. */
+    private suspend fun verdict(sent: PendingBroadcast, txId: String): TxResolution {
+        val answer = safely { resolver.resolve(txId, sent.lastValid) } ?: TxResolution.Unknown
+        return when {
+            answer == TxResolution.Absent && sent.lastValid == null -> TxResolution.Unknown
+            answer is TxResolution.Confirmed && answer.txId != txId -> TxResolution.Unknown
+            else -> answer
+        }
+    }
+
+    /** A transfer handed to submit with no id to resume from: only the account search can identify it; it is never cleared automatically. */
+    private suspend fun resumeUnidentified(sent: PendingBroadcast): Resumed {
+        val t = sent.transfer
+        val found = safely { resolver.findTransfer(t.sender, t.receiver, t.assetId, t.amountMicro, t.firstValid ?: t.builtRound) }
+        if (found is TxResolution.Confirmed) {
+            val identified = t.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)
+            store.put(identified) // if this fails the unidentified record stays and still blocks
+            val next = PendingBroadcast(identified, sent.context)
+            showSubmitting(next)
+            afterBroadcast(next, Confirmation.CONFIRMED)
+        } else {
+            blockedUnknown()
+        }
+        return Resumed.HANDLED
+    }
+
     private fun showSubmitting(sent: PendingBroadcast) = ui.update {
-        it.copy(state = StakeState.Submitting(sent.txId), plan = sent.plan, loading = false, failedStage = null, pendingSummary = null)
+        it.copy(state = StakeState.Submitting(sent.txId.orEmpty()), loading = false, failedStage = null, pendingSummary = null)
+    }
+
+    /** Nothing to resume from and nothing may be built: keep saying so. */
+    private fun blockedUnknown() = ui.update {
+        it.copy(
+            state = StakeState.Failed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE, recoverable = true),
+            loading = false,
+            failedStage = StakeStage.SUBMIT.ordinal,
+        )
     }
 
     private fun stillPending(sent: PendingBroadcast, message: String = "The stake transaction may still be processed. Try again shortly.") = ui.update {
@@ -604,14 +726,15 @@ class StakeViewModel(
         if (ensureConnected(reconnectOnly = true)) loadAmount()
     }
 
-    /** Records the transfer that may be on the network; a live record of another stake is never replaced. */
-    private fun record(sent: PendingBroadcast) {
-        val live = pendingBroadcast
-        check(live == null || (live.minerKey == sent.minerKey && live.context == sent.context && live.address == sent.address)) {
-            "another stake transfer is still unresolved"
-        }
-        pendingBroadcast = sent
+    /** The recorded transfer of [address], if any. */
+    private fun pendingFor(address: String): Pending = when (val found = store.find(address, TransferKind.STAKE)) {
+        PendingLookup.None -> Pending.None
+        PendingLookup.Unreadable -> Pending.Unreadable
+        is PendingLookup.Found -> contextFrom(found.record.row)?.let { Pending.Found(PendingBroadcast(found.record, it)) } ?: Pending.Unreadable
     }
+
+    /** Removes the record once the dashboard has recorded the stake or the transfer is proven dead; false = it is still there. */
+    private fun clear(sent: PendingBroadcast): Boolean = store.remove(sent.address, TransferKind.STAKE, sent.minerKey, sent.transfer.row)
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try {
         block()
@@ -620,10 +743,6 @@ class StakeViewModel(
     } catch (e: Exception) {
         null
     }
-
-    /** The earlier of the bridge's last valid round and the build round plus the 1000-round maximum validity (plus the first-round slack). */
-    private fun lastValidBound(reported: Long?, builtRound: Long?): Long? =
-        listOfNotNull(reported, builtRound?.plus(MAX_TXN_LIFE + 1)).minOrNull()
 
     private suspend fun signSingle(txnB64: String): String {
         val summary = runCatching { bridge.decodeTxn(txnB64) }.getOrNull()
@@ -665,6 +784,20 @@ class StakeViewModel(
     companion object {
         const val WAIT_ROUNDS = 4
         private const val MICRO_PER_TOKEN = 1_000_000L
+
+        /** The stake context as stored in a [PendingTransfer]: `registration`, `node` or `verification:<tier>`. */
+        fun contextCode(context: StakeContext): String = when (context) {
+            StakeContext.Registration -> "registration"
+            StakeContext.Node -> "node"
+            is StakeContext.Verification -> "verification:${context.tier.code}"
+        }
+
+        fun contextFrom(code: String): StakeContext? = when {
+            code == "registration" -> StakeContext.Registration
+            code == "node" -> StakeContext.Node
+            code.startsWith("verification:") -> StakeTier.entries.firstOrNull { it.code == code.removePrefix("verification:") }?.let { StakeContext.Verification(it) }
+            else -> null
+        }
 
         /** Display tokens -> on-chain micro units (6 decimals), e.g. `2.5` -> `2500000`. */
         fun microFor(tokens: BigDecimal): Long =

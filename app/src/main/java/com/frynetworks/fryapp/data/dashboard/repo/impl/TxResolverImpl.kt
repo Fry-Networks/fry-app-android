@@ -9,6 +9,7 @@ import com.frynetworks.fryapp.network.dashboard.DashboardConfig
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -27,6 +28,8 @@ class TxResolverImpl(
     private val indexer: IndexerApi,
     private val indexerUrls: List<String> = listOf(DashboardConfig.INDEXER_ALGONODE_URL, DashboardConfig.INDEXER_NODELY_URL),
     private val callTimeoutMillis: Long = CALL_TIMEOUT_MILLIS,
+    /** Where the network calls run; the timeout is measured on its clock. */
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : TxResolver {
 
     private sealed interface Reply {
@@ -106,7 +109,7 @@ class TxResolverImpl(
     }
 
     /** One GET, never throwing and never longer than the call timeout. */
-    private suspend fun get(url: String): Reply = withContext(Dispatchers.IO) {
+    private suspend fun get(url: String): Reply = withContext(dispatcher) {
         try {
             withTimeoutOrNull(callTimeoutMillis) { read(url) } ?: Reply.Bad
         } catch (e: CancellationException) {

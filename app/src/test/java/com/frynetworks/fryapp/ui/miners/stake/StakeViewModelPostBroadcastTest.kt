@@ -4,8 +4,10 @@ import com.frynetworks.fryapp.data.dashboard.model.Product
 import com.frynetworks.fryapp.data.dashboard.model.ProductReward
 import com.frynetworks.fryapp.data.dashboard.model.ProductStake
 import com.frynetworks.fryapp.data.dashboard.model.ProductTokens
+import com.frynetworks.fryapp.data.dashboard.api.IndexerApi
 import com.frynetworks.fryapp.data.dashboard.repo.AlgodRepository
 import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
+import com.frynetworks.fryapp.data.dashboard.repo.impl.TxResolverImpl
 import com.frynetworks.fryapp.domain.FryAsset
 import com.frynetworks.fryapp.domain.StakeContext
 import com.frynetworks.fryapp.domain.StakeState
@@ -34,6 +36,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+import retrofit2.Response
 import java.io.IOException
 import java.math.BigDecimal
 
@@ -283,37 +289,109 @@ class StakeViewModelPostBroadcastTest {
         assertEquals(1, transfers())
     }
 
+    // --- a rebuild needs the real resolver's full proof of death -----------------------------------------------------------
+    // The last valid round now comes only from the signed bytes (algosdk 3.7.0 vectors, signed never broadcast: fv 1000 and lv 1500 / lv 5000
+    // for an asset transfer of asset 2681521901, amount 5000000, throwaway key) and no estimate from the build round is used anywhere.
+
+    private val signedLv1500 = "gqNzaWfEQOgumRWlPG+C/xnCYYeu0Parj8rqN31ruUF09EiPWnHQYd6zfXMqZ6iH3AJb1aqnsj3P4iN9f5jZhNWjZHCyDwKjdHhuiqRhYW10zgBMS0CkYXJjdsQg/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hijZmVlzQPoomZ2zQPoo2dlbqxtYWlubmV0LXYxLjCiZ2jEIMBhxNj8Hb3e0tdgS+RWjj9tBBmHrDe95LYgtas5JIrfomx2zQXco3NuZMQg6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iykdHlwZaVheGZlcqR4YWlkzp/Uxu0="
+    private val txIdLv1500 = "SPWQWS7VMRTDHZWM2VTUGF6INVO3BXZYGSAW7G4U6FJAUDI4VOUQ"
+    private val signedLv5000 = "gqNzaWfEQMXiGsqdMWlSh+Cn1oQlfZIkElil8Ofksr/ZUmFcophGECVlMV29qqwBbVkKQdS3/2nyhVwdGzz1HueOr4MwkAyjdHhuiqRhYW10zgBMS0CkYXJjdsQg/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hijZmVlzQPoomZ2zQPoo2dlbqxtYWlubmV0LXYxLjCiZ2jEIMBhxNj8Hb3e0tdgS+RWjj9tBBmHrDe95LYgtas5JIrfomx2zROIo3NuZMQg6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iykdHlwZaVheGZlcqR4YWlkzp/Uxu0="
+    private val txIdLv5000 = "SJF3LQCVVM4AWZF4WAW7UENC5Z2ATRJ56QIBX5SM2XA7QDFTCTQA"
+
+    /** Two indexers at [round] that have never heard of any txid (a definitive JSON 404), with a healthy database. */
+    private class UnknowingIndexers(var round: Long) : IndexerApi {
+        private val json = "application/json".toMediaType()
+
+        override suspend fun get(url: String): Response<ResponseBody> = when {
+            url.endsWith("/health") ->
+                Response.success("""{"db-available":true,"is-migrating":false,"message":"$round","round":$round,"version":"3.10.0-ndly"}""".toResponseBody(json))
+            else -> Response.error(404, """{"message":"no transaction found for transaction id"}""".toResponseBody(json))
+        }
+    }
+
+    /** Algod whose pending pool answers a definitive 404 for the txid, on top of the test's own status and round. */
+    private val poolForgotEverything: AlgodRepository = object : AlgodRepository by algod {
+        override suspend fun poolHasNoRecord(txId: String): Boolean = true
+    }
+
+    /** The view model with the real [TxResolverImpl] over [indexers]; [signed] replaces the fake bridge's undecodable blob when given. */
+    private fun vmResolving(indexers: UnknowingIndexers, signed: String? = null): StakeViewModel {
+        val signing: WalletBridge = object : WalletBridge by bridge {
+            override suspend fun signTxns(groups: List<List<com.frynetworks.fryapp.wallet.TxnToSign>>): List<List<String?>> {
+                val result = bridge.signTxns(groups)
+                return if (signed == null) result else result.map { g -> g.map { if (it != null) signed else null } }
+            }
+        }
+        // the fake indexers answer at once, so the calls run inline and every retry has settled when it returns
+        val resolver = TxResolverImpl(poolForgotEverything, indexers, listOf("https://idx-a.test", "https://idx-b.test"), dispatcher = Dispatchers.Unconfined)
+        return StakeViewModel(
+            miners, rewards, stakes, poolForgotEverything, signing, TestSession.signedIn(), fixedClock(1_757_592_000_000L),
+            openUri = {}, resolver = resolver,
+        )
+    }
+
+    private fun failFirstSubmit(vm: StakeViewModel) {
+        throwOnSubmit = IOException("connection reset")
+        vm.start(key, StakeContext.Registration, byod = false)
+        vm.confirm()
+        throwOnSubmit = null
+    }
+
     @Test
-    fun `one round past the last valid round a rebuild is allowed and needs a new confirmation`() = runTest {
-        val vm = failedSubmitThenRetryAt(round = 1_501L, status = TxStatus.Absent)
+    fun `one round past the signed last valid round, with the pool and both indexers knowing nothing, a rebuild is allowed and needs a new confirmation`() = runTest {
+        val indexers = UnknowingIndexers(round = 1_501L)
+        val vm = vmResolving(indexers, signedLv1500)
+        failFirstSubmit(vm)
+        status = TxStatus.Absent
+        round = 1_501L
+        vm.retry()
 
         assertTrue("${vm.uiState.value.state}", vm.uiState.value.state is StakeState.Ready)
         assertEquals(1, transfers())
 
         round = 1_501L
+        fake.submitTxIds = listOf(txIdLv1500) // the second transfer is signed from the same bytes: submit reports the id they give
         vm.confirm()
         assertDone(vm)
         assertEquals(2, transfers())
     }
 
     @Test
-    fun `without a last valid round from the bridge the bound is the build round plus 1001`() = runTest {
-        bridgeLastValid = null
-        var vm = failedSubmitThenRetryAt(round = 2_001L, status = TxStatus.Absent)
+    fun `an undecodable last valid round is null and never allows a rebuild, with no estimate from the build round`() = runTest {
+        bridgeLastValid = 1_500L // even a bridge-reported value is no resolver input
+        val indexers = UnknowingIndexers(round = 9_999L) // every source is far past anything an estimate would give
+        val vm = vmResolving(indexers)
+        failFirstSubmit(vm)
+        status = TxStatus.Absent
+        round = 2_001L
+        vm.retry()
         assertEquals("TXN_PENDING", failed(vm).code)
         assertEquals(1, transfers())
 
         vm.retry()
         round = 2_002L
         vm.retry()
-        assertTrue("${vm.uiState.value.state}", vm.uiState.value.state is StakeState.Ready)
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(1, transfers())
     }
 
     @Test
-    fun `the earlier of the bridge's last valid round and the bound is used`() = runTest {
-        bridgeLastValid = 5_000L // later than the build round plus 1001 = 2001
-        val vm = failedSubmitThenRetryAt(round = 2_002L, status = TxStatus.Absent)
+    fun `a decoded last valid round later than the build round estimate is honoured`() = runTest {
+        val indexers = UnknowingIndexers(round = 2_002L) // past the old estimate, 1000 + 1001 = 2001
+        val vm = vmResolving(indexers, signedLv5000)
+        failFirstSubmit(vm)
+        status = TxStatus.Absent
+        round = 2_002L
+        vm.retry()
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(1, transfers())
+
+        // control: the same arrangement does rebuild once every source is past the decoded lv
+        round = 5_001L
+        indexers.round = 5_001L
+        vm.retry()
         assertTrue("${vm.uiState.value.state}", vm.uiState.value.state is StakeState.Ready)
+        assertEquals(1, transfers())
     }
 
     @Test
