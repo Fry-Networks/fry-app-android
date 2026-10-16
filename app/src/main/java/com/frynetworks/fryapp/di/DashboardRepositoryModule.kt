@@ -4,6 +4,7 @@ import com.frynetworks.fryapp.auth.SessionRepository
 import com.frynetworks.fryapp.data.DeviceDao
 import com.frynetworks.fryapp.data.dashboard.api.AlgodApi
 import com.frynetworks.fryapp.data.dashboard.api.DashboardApi
+import com.frynetworks.fryapp.data.dashboard.api.IndexerApi
 import com.frynetworks.fryapp.data.dashboard.db.AssetTotalsCacheDao
 import com.frynetworks.fryapp.data.dashboard.db.MinerDetailCacheDao
 import com.frynetworks.fryapp.data.dashboard.db.RemoteMinerDao
@@ -12,12 +13,18 @@ import com.frynetworks.fryapp.data.dashboard.repo.AlgodRepository
 import com.frynetworks.fryapp.data.dashboard.repo.MinerRepository
 import com.frynetworks.fryapp.data.dashboard.repo.RewardsRepository
 import com.frynetworks.fryapp.data.dashboard.repo.StakeRepository
+import com.frynetworks.fryapp.data.dashboard.repo.TxResolver
 import com.frynetworks.fryapp.data.dashboard.repo.impl.AlgodRepositoryImpl
 import com.frynetworks.fryapp.data.dashboard.repo.impl.MinerRepositoryImpl
 import com.frynetworks.fryapp.data.dashboard.repo.impl.RewardsRepositoryImpl
 import com.frynetworks.fryapp.data.dashboard.repo.impl.StakeRepositoryImpl
+import com.frynetworks.fryapp.data.dashboard.repo.impl.TxResolverImpl
+import com.frynetworks.fryapp.data.pending.PendingTransferStore
+import com.frynetworks.fryapp.data.pending.SharedPrefsPendingTransferStore
 import com.frynetworks.fryapp.network.dashboard.ServerClock
 import com.frynetworks.fryapp.network.dashboard.SessionEventBus
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -42,6 +49,21 @@ object DashboardRepositoryModule {
     @Provides
     @Singleton
     fun provideAlgodApi(@AlgodClient retrofit: Retrofit): AlgodApi = retrofit.create(AlgodApi::class.java)
+
+    /** Absolute-URL GETs against the two public indexers, on the same plain client as algod (no cookies, no tokens). */
+    @Provides
+    @Singleton
+    fun provideIndexerApi(@AlgodClient retrofit: Retrofit): IndexerApi = retrofit.create(IndexerApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideTxResolver(algod: AlgodRepository, indexer: IndexerApi): TxResolver = TxResolverImpl(algod, indexer)
+
+    /** "fry_pending_transfer": no sign-out, session-clear or wallet-disconnect path deletes this file. */
+    @Provides
+    @Singleton
+    fun providePendingTransferStore(@ApplicationContext context: Context): PendingTransferStore =
+        SharedPrefsPendingTransferStore(context.getSharedPreferences("fry_pending_transfer", Context.MODE_PRIVATE))
 
     @Provides
     @Singleton

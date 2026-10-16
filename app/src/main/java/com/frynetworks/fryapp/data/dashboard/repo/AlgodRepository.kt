@@ -26,6 +26,9 @@ interface AlgodRepository {
 
     /** The node's latest round, or null when unknown (which keeps a broadcast stake from ever being rebuilt). */
     suspend fun currentRound(): Long? = null
+
+    /** True only when the node answered a definitive 404 for [txId] in its pending pool; false for anything else, errors included. */
+    suspend fun poolHasNoRecord(txId: String): Boolean = false
 }
 
 sealed interface TxStatus {

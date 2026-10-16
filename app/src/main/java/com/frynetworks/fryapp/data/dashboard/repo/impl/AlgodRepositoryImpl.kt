@@ -79,6 +79,12 @@ class AlgodRepositoryImpl(private val api: AlgodApi) : AlgodRepository {
         return if (poolError.isNullOrBlank()) TxStatus.InPool else TxStatus.Rejected(poolError)
     }
 
+    override suspend fun poolHasNoRecord(txId: String): Boolean = try {
+        get { api.pendingTransaction(txId, "json") }.first == 404
+    } catch (e: DashboardException) {
+        false
+    }
+
     override suspend fun currentRound(): Long? = try {
         DashboardCalls.longOrNull(DashboardCalls.objectOrNull(get { api.status() }.second), "last-round")
     } catch (e: DashboardException) {

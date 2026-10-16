@@ -10,6 +10,10 @@ import com.frynetworks.fryapp.BuildConfig
 object DashboardConfig {
     const val BASE_URL: String = BuildConfig.DASHBOARD_BASE
     const val ALGOD_URL: String = BuildConfig.ALGOD_BASE
+
+    /** Two independent public mainnet indexers; a transfer is only called absent when both say so (never sent: only a txid or an address goes out). */
+    const val INDEXER_ALGONODE_URL: String = "https://mainnet-idx.algonode.cloud"
+    const val INDEXER_NODELY_URL: String = "https://mainnet-idx.4160.nodely.dev"
     const val SIGNATURE_SECRET: String = BuildConfig.REQUEST_SIGNATURE_SECRET
 
     /** Version-scoped so a UA change happens exactly once per app update. */
