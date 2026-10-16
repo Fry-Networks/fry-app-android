@@ -12,6 +12,7 @@ import com.frynetworks.fryapp.data.dashboard.repo.TxResolver
 import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
 import com.frynetworks.fryapp.data.pending.InMemoryPendingTransferStore
 import com.frynetworks.fryapp.data.pending.PendingLookup
+import com.frynetworks.fryapp.data.pending.PendingTransfer
 import com.frynetworks.fryapp.data.pending.PendingTransferStore
 import com.frynetworks.fryapp.data.pending.PendingTransferStoreTest
 import com.frynetworks.fryapp.data.pending.SharedPrefsPendingTransferStore
@@ -80,6 +81,7 @@ class StakePendingTransferTest {
     private var throwOnSubmit: Throwable? = null
     private var submitReturns: List<String>? = null
     private var onSubmit: () -> Unit = {}
+    private var cancelAfterSubmit = false
 
     private class ScriptedResolver : TxResolver {
         var verdict: TxResolution = TxResolution.Unknown
@@ -118,6 +120,12 @@ class StakePendingTransferTest {
         }
 
         override suspend fun submit(signedB64: List<String>, waitRounds: Int): List<String> {
+            val result = submitInner(signedB64, waitRounds)
+            if (cancelAfterSubmit) kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+            return result
+        }
+
+        private suspend fun submitInner(signedB64: List<String>, waitRounds: Int): List<String> {
             onSubmit()
             throwOnSubmit?.let {
                 fake.submitted += signedB64
@@ -173,6 +181,10 @@ class StakePendingTransferTest {
     }
 
     private fun assertDone(vm: StakeViewModel) = assertEquals(StakeState.Done("RECORDEDTX", waived = false), vm.uiState.value.state)
+
+    /** What a new process would read from [prefs]: a downgraded record is blocked in memory in this one, so [record] cannot see it. */
+    private fun persistedRecord(prefs: PendingTransferStoreTest.FakePrefs) =
+        (SharedPrefsPendingTransferStore(prefs).find(TEST_ADDRESS, TransferKind.STAKE) as? PendingLookup.Found)?.record
 
     private fun record(sender: String = TEST_ADDRESS) = (store.find(sender, TransferKind.STAKE) as? PendingLookup.Found)?.record
 
@@ -242,24 +254,28 @@ class StakePendingTransferTest {
 
     @Test
     fun `a submit that returns another txid than the signed bytes give blocks and keeps the transfer unresolved`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
         signedBlob = vectorSigned
         submitReturns = listOf("SOMETHINGELSE")
         val vm = begin()
         assertEquals("TXN_PENDING", failed(vm).code)
-        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
+        assertEquals(TransferState.POSSIBLY_BROADCAST, persistedRecord(prefs)!!.state)
         resolver.verdict = TxResolution.Absent
         vm.retry()
         assertEquals(1, transfers())
-        assertTrue(record() != null)
+        assertTrue(persistedRecord(prefs) != null)
     }
 
     @Test
     fun `the bridge's decoded txid is checked against the submit result too when the bytes cannot be read`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
         decodedTxId = "DECODEDTX"
         submitReturns = listOf("ANOTHERTX")
         val vm = begin()
         assertEquals("TXN_PENDING", failed(vm).code)
-        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
+        assertEquals(TransferState.POSSIBLY_BROADCAST, persistedRecord(prefs)!!.state)
         assertEquals(1, transfers())
         vm.retry()
         assertEquals(1, transfers())
@@ -603,29 +619,104 @@ class StakePendingTransferTest {
         submitReturns = listOf("SOMETHINGELSE")
         onSubmit = { prefs.failCommits = 1 } // the first downgrade write fails, the retry succeeds
         begin()
-        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
-        assertNull(record()!!.txId)
+        assertEquals(TransferState.POSSIBLY_BROADCAST, persistedRecord(prefs)!!.state)
+        assertNull(persistedRecord(prefs)!!.txId)
         assertEquals(1, transfers())
     }
 
-    /** Runs every block inline but counts the dispatches, to show where the store is touched. */
+    /** Runs every block inline, noting that it is inside the dispatcher while it runs. */
     private class CountingDispatcher : kotlinx.coroutines.CoroutineDispatcher() {
         var dispatched = 0
+        var inside = 0
         override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
             dispatched++
-            block.run()
+            inside++
+            try {
+                block.run()
+            } finally {
+                inside--
+            }
         }
     }
 
+    /** Counts every store method call and notes any made outside the dispatcher. */
+    private class AuditedStore(private val inner: PendingTransferStore, private val dispatcher: CountingDispatcher) : PendingTransferStore {
+        val calls = sortedMapOf<String, Int>()
+        val outside = mutableListOf<String>()
+        private fun <T> note(name: String, block: () -> T): T {
+            calls.merge(name, 1, Int::plus)
+            if (dispatcher.inside == 0) outside += name
+            return block()
+        }
+        override fun find(sender: String, kind: TransferKind) = note("find") { inner.find(sender, kind) }
+        override fun get(sender: String, kind: TransferKind, minerKey: String, row: String) = note("get") { inner.get(sender, kind, minerKey, row) }
+        override fun put(record: PendingTransfer) = note("put") { inner.put(record) }
+        override fun putNew(record: PendingTransfer) = note("putNew") { inner.putNew(record) }
+        override fun remove(sender: String, kind: TransferKind, minerKey: String, row: String) = note("remove") { inner.remove(sender, kind, minerKey, row) }
+        override fun blockPermanently(sender: String, kind: TransferKind, minerKey: String, row: String) =
+            note("blockPermanently") { inner.blockPermanently(sender, kind, minerKey, row) }
+    }
+
     @Test
-    fun `every store access of a stake runs on the injected IO dispatcher`() = runTest {
+    fun `every store method call of a stake goes through the injected IO dispatcher`() = runTest {
         val counting = CountingDispatcher()
+        val audited = AuditedStore(store, counting)
+        store = audited
         ioDispatcher = counting
         signedBlob = vectorSigned
         val vm = begin()
         assertDone(vm)
-        // gate lookup, first write, clear after Recorded and the open-time lookup each go through the dispatcher
-        assertTrue("dispatched ${counting.dispatched}", counting.dispatched >= 4)
+        assertEquals("calls outside the dispatcher: ${audited.outside}", emptyList<String>(), audited.outside)
+        // open-time lookup + gate lookup, the first write, the clear after Recorded; nothing else
+        assertEquals(mapOf("find" to 2, "putNew" to 1, "remove" to 1), audited.calls.toMap())
+        assertEquals("every call is one dispatch", 4, counting.dispatched)
+    }
+
+    // --- cancellation after the transfer may be on the network: the store writes still complete ------------------------------
+
+    @Test
+    fun `a job cancelled right after submit returns still records the id of an unidentified transfer`() = runTest {
+        signedBlob = null
+        decodedTxId = null
+        submitReturns = listOf("RETURNEDTX")
+        cancelAfterSubmit = true
+        begin()
+        val r = record()!!
+        assertEquals("RETURNEDTX", r.txId)
+        assertEquals(TransferState.PRE_SUBMIT, r.state)
+        assertEquals(1, transfers())
+    }
+
+    @Test
+    fun `a job cancelled during the downgrade still rewrites the record and the next view model is blocked`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = vectorSigned
+        submitReturns = listOf("SOMETHINGELSE")
+        cancelAfterSubmit = true
+        onSubmit = { prefs.failCommits = 1 } // the first downgrade write fails too
+        begin()
+        val persisted = SharedPrefsPendingTransferStore(prefs) // what the next process reads
+        val r = (persisted.find(TEST_ADDRESS, TransferKind.STAKE) as PendingLookup.Found).record
+        assertEquals(TransferState.POSSIBLY_BROADCAST, r.state)
+        assertNull(r.txId)
+        store = persisted
+        val next = vm()
+        next.start(key, StakeContext.Registration, byod = false)
+        assertEquals("TXN_PENDING", failed(next).code)
+        assertEquals(1, transfers())
+    }
+
+    @Test
+    fun `a job cancelled when the downgrade write fails twice still blocks the key for this process`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = vectorSigned
+        submitReturns = listOf("SOMETHINGELSE")
+        cancelAfterSubmit = true
+        onSubmit = { prefs.failCommits = 2 }
+        begin()
+        assertEquals(PendingLookup.Unreadable, store.find(TEST_ADDRESS, TransferKind.STAKE))
     }
 
     @Test

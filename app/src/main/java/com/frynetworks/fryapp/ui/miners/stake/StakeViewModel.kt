@@ -51,6 +51,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -541,7 +542,7 @@ class StakeViewModel(
             )
             // From here the transfer can reach the network whatever submit reports back: it is on disk first, and a record that
             // cannot be written means nothing is sent.
-            if (!io { store.putNew(toSend) }) throw RecordNotSaved()
+            if (!ioWrite { store.putNew(toSend) }) throw RecordNotSaved()
             recorded = toSend
             val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()?.takeIf { it.isNotBlank() }
                 ?: throw BridgeException(BridgeErrorCode.UNKNOWN, "The bridge returned no transaction id")
@@ -690,7 +691,7 @@ class StakeViewModel(
         val found = safely { resolver.findTransfer(t.sender, t.receiver, t.assetId, t.amountMicro, t.firstValid ?: t.builtRound) }
         if (found is TxResolution.Confirmed) {
             val identified = t.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)
-            if (!io { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending stake transfer") // the unidentified record stays and still blocks
+            if (!ioWrite { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending stake transfer") // the unidentified record stays and still blocks
             val next = PendingBroadcast(identified, sent.context)
             showSubmitting(next)
             afterBroadcast(next, Confirmation.CONFIRMED)
@@ -739,29 +740,35 @@ class StakeViewModel(
 
     /** Removes the record once the dashboard has recorded the stake or the transfer is proven dead; false = it is still there. */
     private suspend fun clear(sent: PendingBroadcast): Boolean {
-        repeat(CLEAR_ATTEMPTS) {
-            if (io { store.remove(sent.address, TransferKind.STAKE, sent.minerKey, sent.transfer.row) }) return true
-        }
+        val cleared = ioWrite { (1..CLEAR_ATTEMPTS).any { store.remove(sent.address, TransferKind.STAKE, sent.minerKey, sent.transfer.row) } }
+        if (cleared) return true
         Log.w(LOG_TAG, "could not clear the pending stake record after $CLEAR_ATTEMPTS tries")
         return false
     }
 
     /** The submit result named another id than the signed bytes: the record loses its id (retried once) or, failing that, is blocked for this process. */
     private suspend fun downgradeToUnidentified(record: PendingTransfer) {
-        val unidentified = record.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)
-        if (io { store.put(unidentified) } || io { store.put(unidentified) }) return
-        Log.e(LOG_TAG, "could not rewrite a pending stake record after a txid mismatch: blocked for this process")
-        io { store.blockPermanently(record.sender, record.kind, record.minerKey, record.row) }
+        // One uncancellable block (withContext throws on exit once its job is cancelled, so separate blocks would cut the sequence short).
+        // Blocked in memory first, so a cancellation or a failed write can never leave this key open to a rebuild.
+        val rewritten = ioWrite {
+            store.blockPermanently(record.sender, record.kind, record.minerKey, record.row)
+            val unidentified = record.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)
+            store.put(unidentified) || store.put(unidentified)
+        }
+        if (!rewritten) Log.e(LOG_TAG, "could not rewrite a pending stake record after a txid mismatch: blocked for this process")
     }
 
     /** submit named the id of a transfer that had none: written down, or logged when that fails (the record then stays unidentified and blocks). */
     private suspend fun identify(transfer: PendingTransfer, txId: String): PendingTransfer {
         val identified = transfer.copy(txId = txId, state = TransferState.PRE_SUBMIT)
-        if (!io { store.put(identified) }) Log.w(LOG_TAG, "could not record the id of a submitted stake transfer")
+        if (!ioWrite { store.put(identified) }) Log.w(LOG_TAG, "could not record the id of a submitted stake transfer")
         return identified
     }
 
     private suspend fun <T> io(block: () -> T): T = withContext(ioDispatcher) { block() }
+
+    /** A store write once the transfer may be on the network: a cancelled job still completes it. */
+    private suspend fun <T> ioWrite(block: () -> T): T = withContext(NonCancellable + ioDispatcher) { block() }
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try {
         block()

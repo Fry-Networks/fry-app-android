@@ -45,6 +45,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -411,12 +412,12 @@ class ClaimViewModel(
                     createdAt = clock.nowMillis(),
                 )
                 // On disk before the network can see it: a record that cannot be written means nothing is sent.
-                if (!io { store.putNew(toSend) }) throw RecordNotSaved()
+                if (!ioWrite { store.putNew(toSend) }) throw RecordNotSaved()
                 recorded = toSend
                 val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()?.takeIf { it.isNotBlank() }
                     ?: throw BridgeException(BridgeErrorCode.UNKNOWN, "The bridge returned no transaction id")
                 if (knownId != null && returned != knownId) throw TxIdMismatch()
-                if (knownId == null && !io { store.put(toSend.copy(txId = returned, state = TransferState.PRE_SUBMIT)) }) {
+                if (knownId == null && !ioWrite { store.put(toSend.copy(txId = returned, state = TransferState.PRE_SUBMIT)) }) {
                     Log.w(LOG_TAG, "could not record the id of a submitted claim fee payment") // the record stays unidentified and blocks
                 }
                 feeTxId = returned
@@ -457,7 +458,6 @@ class ClaimViewModel(
             throw e
         } catch (e: Exception) {
             dispatch(ClaimEvent.EnvelopeFailed(e.errorCode(), e.message ?: ""))
-            endAttemptIfSpent(target, e.errorCode())
             return
         }
         dispatch(
@@ -511,7 +511,6 @@ class ClaimViewModel(
             throw e
         } catch (e: Exception) {
             dispatch(ClaimEvent.ConfirmFailed(e.errorCode(), e.message ?: ""))
-            endAttemptIfSpent(target, e.errorCode())
         }
     }
 
@@ -524,8 +523,7 @@ class ClaimViewModel(
                 throw e
             } catch (e: Exception) {
                 dispatch(ClaimEvent.ConfirmFailed(e.errorCode(), e.message ?: ""))
-                endAttemptIfSpent(target, e.errorCode())
-                return
+                    return
             }
             if (result.ok == true || result.success == true) {
                 dispatch(ClaimEvent.Confirmed(result.txId ?: txId, TimeFormat.parseMillis(result.claimedAt)))
@@ -545,35 +543,33 @@ class ClaimViewModel(
     }
 
     /**
-     * A permanent failure ends this claim attempt: its fee is spent, so the next attempt pays a new one. Only a payment known to be
-     * confirmed is cleared; one that might still be in flight (unknown or still in the pool) is never touched.
+     * A confirmed fee record is cleared only when the claim succeeded ([onDone]) or the fee transaction is proven dead. The server never
+     * sees the fee's txid, so reusing a paid fee gains nothing, while clearing it early could burn fees without limit.
+     * Up to three tries; a failure is logged and the record stays (it can only make a later claim reuse a paid fee).
      */
-    private suspend fun endAttemptIfSpent(target: FeeTarget, code: String) {
-        if (code !in SPENT_CODES) return
-        val record = (io { store.get(target.sender, TransferKind.CLAIM_FEE, target.key, target.row) } as? PendingLookup.Found)?.record ?: return
-        val txId = record.txId ?: return
-        val confirmed = safely { algod.txStatus(txId) } is TxStatus.Confirmed || verdict(record, txId) is TxResolution.Confirmed
-        if (confirmed) clearFee(target)
-    }
-
-    /** Up to three tries; a failure is logged and the record stays (it can only make a later claim reuse a paid fee). */
     private suspend fun clearFee(target: FeeTarget): Boolean {
-        repeat(CLEAR_ATTEMPTS) {
-            if (io { store.remove(target.sender, TransferKind.CLAIM_FEE, target.key, target.row) }) return true
-        }
+        val cleared = ioWrite { (1..CLEAR_ATTEMPTS).any { store.remove(target.sender, TransferKind.CLAIM_FEE, target.key, target.row) } }
+        if (cleared) return true
         Log.w(LOG_TAG, "could not clear the claim fee record after $CLEAR_ATTEMPTS tries")
         return false
     }
 
     /** The fee payment's rewrite after a txid mismatch (retried once) or, failing that, a block for this process. */
     private suspend fun downgradeToUnidentified(record: PendingTransfer) {
-        val unidentified = record.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)
-        if (io { store.put(unidentified) } || io { store.put(unidentified) }) return
-        Log.e(LOG_TAG, "could not rewrite a pending claim fee record after a txid mismatch: blocked for this process")
-        io { store.blockPermanently(record.sender, record.kind, record.minerKey, record.row) }
+        // One uncancellable block (withContext throws on exit once its job is cancelled, so separate blocks would cut the sequence short).
+        // Blocked in memory first, so a cancellation or a failed write can never leave this key open to a rebuild.
+        val rewritten = ioWrite {
+            store.blockPermanently(record.sender, record.kind, record.minerKey, record.row)
+            val unidentified = record.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)
+            store.put(unidentified) || store.put(unidentified)
+        }
+        if (!rewritten) Log.e(LOG_TAG, "could not rewrite a pending claim fee record after a txid mismatch: blocked for this process")
     }
 
     private suspend fun <T> io(block: () -> T): T = withContext(ioDispatcher) { block() }
+
+    /** A store write once the payment may be on the network: a cancelled job still completes it. */
+    private suspend fun <T> ioWrite(block: () -> T): T = withContext(NonCancellable + ioDispatcher) { block() }
 
     /** Who a claim attempt pays for, captured when it starts so a logout or account switch cannot redirect its clean-up. */
     private data class FeeTarget(val sender: String, val key: String, val row: String)
@@ -614,10 +610,10 @@ class ClaimViewModel(
         val txId = record.txId ?: return unidentifiedFee(record)
         val pool = safely { algod.txStatus(txId) } ?: TxStatus.Unknown
         return when (pool) {
-            is TxStatus.Confirmed -> paidOrStale(record, txId)
+            is TxStatus.Confirmed -> PriorFee.Paid(txId)
             TxStatus.InPool -> try {
                 algod.waitConfirmed(txId, WAIT_ROUNDS)
-                paidOrStale(record, txId)
+                PriorFee.Paid(txId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -625,21 +621,12 @@ class ClaimViewModel(
             }
             is TxStatus.Rejected -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
             TxStatus.Absent, TxStatus.Unknown -> when (verdict(record, txId)) {
-                is TxResolution.Confirmed -> paidOrStale(record, txId)
+                is TxResolution.Confirmed -> PriorFee.Paid(txId)
                 // Proven dead: the record goes, and only if it really went may the fee be paid again.
                 TxResolution.Absent -> if (clearFee(FeeTarget(address, key, row))) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
                 TxResolution.Unknown -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
             }
         }
-    }
-
-    /**
-     * A payment known to be confirmed belongs to one claim attempt: older than [FEE_RECORD_WINDOW_MILLIS] it is stale, cleared, and the
-     * new attempt pays its own fee. Only ever called for a confirmed payment, never for one that might still be in flight.
-     */
-    private suspend fun paidOrStale(record: PendingTransfer, txId: String): PriorFee {
-        if (clock.nowMillis() - record.createdAt <= FEE_RECORD_WINDOW_MILLIS) return PriorFee.Paid(txId)
-        return if (clearFee(FeeTarget(record.sender, record.minerKey, record.row))) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
     }
 
     /** The resolver's answer, with Absent refused when the last valid round is unknown and anything about another txid ignored. */
@@ -659,8 +646,8 @@ class ClaimViewModel(
         }
         if (found !is TxResolution.Confirmed) return PriorFee.Blocked(UNKNOWN_FEE_MESSAGE)
         val identified = record.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)
-        if (!io { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending claim fee payment") // the unidentified record stays and blocks
-        return paidOrStale(identified, found.txId)
+        if (!ioWrite { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending claim fee payment") // the unidentified record stays and blocks
+        return PriorFee.Paid(found.txId)
     }
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try {
@@ -708,15 +695,6 @@ class ClaimViewModel(
         private const val LOG_TAG = "ClaimViewModel"
         private const val CLEAR_ATTEMPTS = 3
 
-        /**
-         * A confirmed fee is bound to one claim attempt. Older than this and unused it is stale. The claim group itself lives
-         * [CLAIM_GROUP_TTL_MILLIS] (5 min, set on every envelope above); the fee-to-envelope-to-signature path includes a wallet
-         * wait, so the window is six times that: 30 minutes.
-         */
-        const val FEE_RECORD_WINDOW_MILLIS = 30 * 60_000L
-
-        /** Dashboard failures that end a claim attempt for good: another claim is in progress, nothing to claim, the group expired. */
-        private val SPENT_CODES = setOf("REWARD_ALREADY_CLAIMING", "NO_REWARDS", "CLAIM_GROUP_EXPIRED")
         private const val RECORD_FAILED_MESSAGE = "The claim could not be prepared safely on this phone, so nothing was paid. Try again."
         const val CLAIM_GROUP_TTL_MILLIS = 300_000L
         const val CUSTODIAL_POLL_ATTEMPTS = 6
