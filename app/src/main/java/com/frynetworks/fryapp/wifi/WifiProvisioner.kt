@@ -21,6 +21,7 @@ import com.frynetworks.fryapp.provisioning.SoftApHandoff
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -30,11 +31,18 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -255,10 +263,11 @@ class WifiProvisioner @Inject constructor(
 
             val info = try {
                 val req = Request.Builder().url("http://$SOFTAP_IP/info").build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) error("GET /info failed: HTTP ${resp.code}")
-                    gson.fromJson(resp.body?.string(), SoftApInfo::class.java)
-                }
+                val (code, body) = client.newCall(req).awaitBody()
+                if (code !in 200..299) error("GET /info failed: HTTP $code")
+                gson.fromJson(body, SoftApInfo::class.java)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 trySend(SoftApEvent.Failed("GET /info failed: ${e.message}"))
                 close()
@@ -284,15 +293,16 @@ class WifiProvisioner @Inject constructor(
                     .apply { if (transport == KeyTransport.Send && minerKey != null) add("key", minerKey) }
                     .build()
                 val req = Request.Builder().url("http://$SOFTAP_IP/provision").post(body).build()
-                val refused = client.newCall(req).execute().use { resp ->
-                    if (resp.isSuccessful) null else SoftApEvent.Refused(resp.code, errCode(resp.body?.string()))
-                }
+                val (status, reply) = client.newCall(req).awaitBody()
+                val refused = if (status in 200..299) null else SoftApEvent.Refused(status, errCode(reply))
                 if (refused != null) {
                     trySend(refused)
                     close()
                     awaitClose { unregisterOnce() }
                     return@callbackFlow
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 trySend(SoftApEvent.Failed("POST /provision failed: ${e.message}"))
                 close()
@@ -308,9 +318,9 @@ class WifiProvisioner @Inject constructor(
                 while (!reachedTerminal) {
                     val status = try {
                         val req = Request.Builder().url("http://$SOFTAP_IP/status").build()
-                        client.newCall(req).execute().use { resp ->
-                            gson.fromJson(resp.body?.string(), SoftApStatus::class.java)
-                        }
+                        gson.fromJson(client.newCall(req).awaitBody().second, SoftApStatus::class.java)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         null
                     }
@@ -340,6 +350,30 @@ class WifiProvisioner @Inject constructor(
                 unregisterOnce()
             }
         }.flowOn(Dispatchers.IO)
+}
+
+/**
+ * Runs the call without blocking the collecting coroutine and returns `(HTTP status, body)`. Cancelling
+ * the coroutine cancels the call, which also aborts a body read in progress, so a collector that goes
+ * away (the user backing out of the provisioning screen) does not wait out the call's timeouts.
+ */
+private suspend fun Call.awaitBody(): Pair<Int, String?> = suspendCancellableCoroutine { cont ->
+    cont.invokeOnCancellation { cancel() }
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            cont.resumeWithException(e)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            val result = try {
+                response.use { it.code to it.body?.string() }
+            } catch (e: IOException) {
+                cont.resumeWithException(e)
+                return
+            }
+            cont.resume(result)
+        }
+    })
 }
 
 /** The v1.1 `err` field of a `/provision` error body, e.g. `{"err":"key_required"}`; null when absent. */
