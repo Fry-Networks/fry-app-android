@@ -103,7 +103,7 @@ fun StakeSheetContent(
     Column(modifier = modifier.fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()).testTag("stake_content")) {
         Text(state.context?.label() ?: "Stake", style = MaterialTheme.typography.titleLarge)
         Text(
-            text = state.minerKey?.let { MinerListItem.shortKey(it) }.orEmpty() + if (state.byod) "  ·  BYOD (halved)" else "",
+            text = (state.completedMinerKey ?: state.minerKey)?.let { MinerListItem.shortKey(it) }.orEmpty() + if (state.byod) "  ·  BYOD (halved)" else "",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("stake_miner"),
@@ -148,6 +148,9 @@ fun StakeSheetContent(
             is StakeState.Done -> Card(modifier = Modifier.fillMaxWidth().testTag("stake_success")) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(if (s.waived) "Stake already satisfied (waived)" else "Stake recorded", style = MaterialTheme.typography.titleSmall)
+                    (state.completedMinerKey ?: state.minerKey)?.let {
+                        Text("Miner ${MinerListItem.shortKey(it)}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("stake_done_miner"))
+                    }
                     TextButton(
                         onClick = { openExternalUrl(androidContext, ClaimViewModel.EXPLORER_TX_URL + s.txId) },
                         enabled = s.txId.isNotBlank(),

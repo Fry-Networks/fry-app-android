@@ -133,6 +133,8 @@ data class StakeUiState(
     val pendingSummary: TxnSummary? = null,
     val lastWalletUri: String? = null,
     val failedStage: Int? = null,
+    /** The miner whose stake was recorded; may differ from [minerKey] when Retry finished another miner's recorded transfer. */
+    val completedMinerKey: String? = null,
 ) {
     val canConfirm: Boolean get() = state is StakeState.Ready
     val canCancel: Boolean
@@ -731,6 +733,7 @@ class StakeViewModel(
             )
             // Cleared before the state moves on, so nothing can resume and record this stake a second time (a failed clear is retried, up to three tries, and logged).
             clear(sent)
+            ui.update { it.copy(completedMinerKey = sent.minerKey) }
             dispatch(StakeEvent.Recorded(result.txId ?: txId, result.waived))
             runCatching { miners.refreshDetail(sent.minerKey) }
         } catch (e: CancellationException) {
