@@ -605,8 +605,9 @@ class ClaimViewModel(
                     failDirect("INVALID_ENVELOPE", ErrorCopy.forCode("INVALID_ENVELOPE"))
                     return
                 }
-                // A binding without the claim's id could never be resolved, so none is written (the claim then behaves as an unbound fee).
-                if (binding.claimTxId != null && !bindClaim(target, binding)) return
+                // Without the claim's id the binding can only say "a leg was signed": it blocks until the claim completes.
+                val toWrite = if (binding.claimTxId != null) binding else binding.copy(mode = ClaimFeeBinding.UNTRACKED)
+                if (!bindClaim(target, toWrite)) return
                 signGroup(state.groupId, envelope, target)
             }
             ClaimState.Confirming -> {
@@ -835,6 +836,7 @@ class ClaimViewModel(
      * landed; anything else blocks and leaves the record as it is.
      */
     private suspend fun boundFee(record: PendingTransfer, binding: ClaimFeeBinding, target: FeeTarget): PriorFee {
+        if (binding.mode == ClaimFeeBinding.UNTRACKED) return PriorFee.Blocked(UNKNOWN_FEE_MESSAGE)
         val claimId = binding.claimTxId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
         if (binding.mode == ClaimFeeBinding.CUSTODIAL) {
             // The dashboard reports no terminal failure for a custodial claim, so it is never moved.

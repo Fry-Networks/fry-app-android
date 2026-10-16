@@ -204,19 +204,6 @@ class ClaimBareLegTest {
     }
 
     @Test
-    fun `a leg whose id cannot be computed is never bound, so no unresolvable binding persists`() = runTest {
-        userPays("G1", "not-a-transaction")
-        rewards.confirmError = IOException("connection reset")
-        claim()
-        assertEquals(1, pays())
-        assertEquals(null, bindingJson())
-        rewards.confirmError = null
-        userPays("G2", bare(leg2))
-        assertTrue(claim().uiState.value.state is ClaimState.Done)
-        assertEquals("the paid fee was reused", 1, pays())
-    }
-
-    @Test
     fun `an envelope with no user leg fails before signing and persists no binding`() = runTest {
         userPays("G1", "")
         val vm = claim()

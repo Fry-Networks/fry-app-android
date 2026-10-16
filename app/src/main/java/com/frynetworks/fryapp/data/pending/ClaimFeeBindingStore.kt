@@ -23,6 +23,9 @@ data class ClaimFeeBinding(
         const val USER_PAYS = "user_pays"
         const val CUSTODIAL = "custodial"
         const val UNBOUND = "unbound"
+
+        /** A user leg was signed whose id could not be computed: the fee is never reused, cleared or moved, only consumed or supported. */
+        const val UNTRACKED = "user_pays_untracked"
     }
 }
 
@@ -102,7 +105,7 @@ class SharedPrefsClaimFeeBindingStore(private val prefs: SharedPreferences) : Cl
 
     private companion object {
         const val SCHEMA_VERSION = 1
-        val MODES = setOf(ClaimFeeBinding.USER_PAYS, ClaimFeeBinding.CUSTODIAL, ClaimFeeBinding.UNBOUND)
+        val MODES = setOf(ClaimFeeBinding.USER_PAYS, ClaimFeeBinding.CUSTODIAL, ClaimFeeBinding.UNBOUND, ClaimFeeBinding.UNTRACKED)
     }
 }
 
