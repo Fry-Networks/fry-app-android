@@ -30,6 +30,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -56,6 +57,9 @@ class StakeViewModelPostBroadcastTest {
     private var waitError: Throwable? = null
     private var throwOnSubmit: Throwable? = null
     private var bridgeLastValid: Long? = 1_500L
+    private var decodedTxId: String? = TX
+    private var decodeThrows = false
+    private var signThrows: Throwable? = null
 
     private val algod = object : AlgodRepository by backing {
         override suspend fun txStatus(txId: String): TxStatus {
@@ -75,7 +79,13 @@ class StakeViewModelPostBroadcastTest {
     private val bridge: WalletBridge = object : WalletBridge by fake {
         override suspend fun decodeTxn(txnB64: String): TxnSummary {
             val summary = fake.decodeTxn(txnB64)
-            return if (summary.type == "axfer") summary.copy(txId = TX, lastValid = bridgeLastValid) else summary
+            if (summary.type == "axfer" && decodeThrows) throw IllegalStateException("cannot decode")
+            return if (summary.type == "axfer") summary.copy(txId = decodedTxId, lastValid = bridgeLastValid) else summary
+        }
+
+        override suspend fun signTxns(groups: List<List<com.frynetworks.fryapp.wallet.TxnToSign>>): List<List<String?>> {
+            signThrows?.let { throw it }
+            return fake.signTxns(groups)
         }
 
         override suspend fun submit(signedB64: List<String>, waitRounds: Int): List<String> {
@@ -163,6 +173,7 @@ class StakeViewModelPostBroadcastTest {
         waitError = DashboardException("TXN_NOT_CONFIRMED", "slow")
         val vm = begin()
         status = TxStatus.Unknown
+        stakes.verifyError = DashboardException("TXN_VERIFY_FAILED", "not found")
 
         repeat(3) {
             vm.retry()
@@ -321,6 +332,7 @@ class StakeViewModelPostBroadcastTest {
         throwOnSubmit = null
         status = TxStatus.Absent
 
+        stakes.verifyError = DashboardException("TXN_VERIFY_FAILED", "not found")
         statusError = IOException("algod down")
         round = 9_999L
         vm.retry()
@@ -347,6 +359,188 @@ class StakeViewModelPostBroadcastTest {
 
         assertEquals("TXN_PENDING", failed(vm).code)
         assertEquals(1, transfers())
+    }
+
+    // --- liveness: a pool that forgot a confirmed transaction -------------------------------------------------------------
+
+    @Test
+    fun `an unknown status with the dashboard verifying it goes on to record, building nothing`() = runTest {
+        waitError = DashboardException("TXN_NOT_CONFIRMED", "slow")
+        val vm = begin()
+        waitError = null
+        status = TxStatus.Unknown // the pool entry aged out
+
+        vm.retry()
+
+        assertDone(vm)
+        assertEquals(1, transfers())
+        assertEquals(1, fake.signRequests.size)
+        assertEquals(1, stakes.submitCalls.size)
+    }
+
+    @Test
+    fun `an unknown status the dashboard cannot verify stays pending with the txId, building nothing`() = runTest {
+        waitError = DashboardException("TXN_NOT_CONFIRMED", "slow")
+        val vm = begin()
+        stakes.verifyError = DashboardException("TXN_VERIFY_FAILED", "not found")
+        status = TxStatus.Unknown
+
+        vm.retry()
+
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(TX, failed(vm).txId)
+        assertEquals(1, transfers())
+        assertEquals(1, fake.signRequests.size)
+        assertTrue(stakes.submitCalls.isEmpty())
+    }
+
+    // --- an unresolved transfer is never replaced by another stake --------------------------------------------------------
+
+    private val otherKey = "FEM-ZYXWVUTSRQPONMLKJIHGFEDCBA543210"
+
+    private fun failedSubmitThenOtherStake(start: (StakeViewModel) -> Unit): StakeViewModel {
+        miners.products = miners.products + (otherKey to miners.products.getValue(key))
+        rewards.priceTable = mapOf(FryAsset.TFRY.id to BigDecimal("0.5"), FryAsset.FNODE.id to BigDecimal("2"))
+        backing.markOptedIn(FryAsset.FNODE.id, 1_000_000_000L)
+        throwOnSubmit = IOException("connection reset")
+        val vm = begin()
+        throwOnSubmit = null
+        start(vm)
+        vm.confirm()
+        return vm
+    }
+
+    private fun assertOtherStakeBlockedAndFirstResumable(vm: StakeViewModel) {
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(TX, failed(vm).txId)
+        assertEquals(1, transfers())
+        assertEquals(1, fake.signRequests.size)
+        status = TxStatus.Confirmed(1_200)
+        vm.retry()
+        assertDone(vm)
+        assertEquals(1, transfers())
+        assertEquals(1, stakes.submitCalls.size)
+    }
+
+    @Test
+    fun `a stake for another context neither builds nor loses the unresolved transaction`() = runTest {
+        val vm = failedSubmitThenOtherStake { it.start(key, StakeContext.Node, byod = false) }
+        assertOtherStakeBlockedAndFirstResumable(vm)
+    }
+
+    @Test
+    fun `a stake for another miner neither builds nor loses the unresolved transaction`() = runTest {
+        val vm = failedSubmitThenOtherStake { it.start(otherKey, StakeContext.Registration, byod = false) }
+        assertOtherStakeBlockedAndFirstResumable(vm)
+    }
+
+    // --- a transfer whose id could not be learned before it was sent -------------------------------------------------------
+
+    private fun unknownBroadcastAfterFailedSubmit(): StakeViewModel {
+        throwOnSubmit = IOException("connection reset")
+        val vm = begin()
+        throwOnSubmit = null
+        val f = failed(vm)
+        assertEquals("TXN_PENDING", f.code)
+        assertNull(f.txId)
+        assertTrue(f.recoverable)
+        assertEquals(1, transfers())
+        assertEquals(1, fake.signRequests.size)
+        return vm
+    }
+
+    private fun assertNothingFurtherBuilt(vm: StakeViewModel) {
+        status = TxStatus.Absent
+        round = 9_999L
+
+        vm.retry()
+        assertEquals("TXN_PENDING", failed(vm).code)
+
+        vm.start(key, StakeContext.Registration, byod = false)
+        vm.confirm()
+        assertEquals("TXN_PENDING", failed(vm).code)
+
+        miners.products = miners.products + ("FEM-ZYXWVUTSRQPONMLKJIHGFEDCBA543210" to miners.products.getValue(key))
+        rewards.priceTable = mapOf(FryAsset.TFRY.id to BigDecimal("0.5"), FryAsset.FNODE.id to BigDecimal("2"))
+        backing.markOptedIn(FryAsset.FNODE.id, 1_000_000_000L)
+        vm.start(key, StakeContext.Node, byod = false)
+        vm.confirm()
+        assertEquals("TXN_PENDING", failed(vm).code)
+        vm.start("FEM-ZYXWVUTSRQPONMLKJIHGFEDCBA543210", StakeContext.Registration, byod = false)
+        vm.confirm()
+        assertEquals("TXN_PENDING", failed(vm).code)
+
+        assertEquals(1, transfers())
+        assertEquals(1, fake.signRequests.size)
+    }
+
+    @Test
+    fun `no transaction id and a failing submit refuses every further stake`() = runTest {
+        decodedTxId = null
+        assertNothingFurtherBuilt(unknownBroadcastAfterFailedSubmit())
+    }
+
+    @Test
+    fun `a transaction that cannot be decoded and a failing submit refuses every further stake`() = runTest {
+        decodeThrows = true
+        assertNothingFurtherBuilt(unknownBroadcastAfterFailedSubmit())
+    }
+
+    @Test
+    fun `no transaction id but a good submit behaves as usual and resumes from the id submit returned`() = runTest {
+        decodedTxId = null
+        waitError = DashboardException("TXN_NOT_CONFIRMED", "slow")
+        val vm = begin()
+        assertEquals(TX, failed(vm).txId)
+        waitError = null
+        status = TxStatus.Confirmed(1_200)
+
+        vm.retry()
+
+        assertDone(vm)
+        assertEquals(1, transfers())
+    }
+
+    @Test
+    fun `no transaction id and a good submit lifts the mark for the next stake`() = runTest {
+        decodedTxId = null
+        val vm = begin()
+        assertDone(vm)
+
+        vm.start(key, StakeContext.Registration, byod = false)
+        vm.confirm()
+
+        assertDone(vm)
+        assertEquals(2, transfers())
+    }
+
+    @Test
+    fun `no transaction id and a rejected signature sent nothing, so the next stake builds`() = runTest {
+        decodedTxId = null
+        fake.signBehaviour = listOf(FakeWalletBridge.SignBehaviour.Reject)
+        val vm = begin()
+        assertEquals("USER_REJECTED", failed(vm).code)
+        fake.signBehaviour = listOf(FakeWalletBridge.SignBehaviour.Approve)
+
+        vm.start(key, StakeContext.Registration, byod = false)
+        vm.confirm()
+
+        assertDone(vm)
+        assertEquals(2, transfers())
+    }
+
+    @Test
+    fun `no transaction id and a cancelled signing sent nothing, so the next stake builds`() = runTest {
+        decodedTxId = null
+        signThrows = kotlinx.coroutines.CancellationException("cancelled")
+        val vm = begin()
+        signThrows = null
+
+        vm.start(key, StakeContext.Registration, byod = false)
+        vm.confirm()
+
+        assertDone(vm)
+        assertEquals(2, transfers())
     }
 
     // --- control ------------------------------------------------------------------------------------------------------
