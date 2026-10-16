@@ -35,9 +35,12 @@ data class PendingTransfer(
     val builtRound: Long?,
     val state: TransferState,
     val createdAt: Long,
+    /** Claim fees only: 2 for a record written by 0.4.8 or later, 1 for one written by 0.4.7 (which says nothing about the claim it paid for). */
+    val feeVersion: Int = FEE_VERSION,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
+        const val FEE_VERSION = 2
     }
 }
 
@@ -158,6 +161,7 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
         r.builtRound?.let { addProperty("builtRound", it) }
         addProperty("state", r.state.name)
         addProperty("createdAt", r.createdAt)
+        if (r.kind == TransferKind.CLAIM_FEE) addProperty("feeVersion", r.feeVersion)
     }
 
     /** null for anything that is not exactly a schema-1 record stored under the key its own fields give. */
@@ -166,8 +170,9 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
         if (o.get("schemaVersion")?.asInt != PendingTransfer.SCHEMA_VERSION) {
             null
         } else {
+            val kind = TransferKind.valueOf(o.get("kind").asString)
             val record = PendingTransfer(
-                kind = TransferKind.valueOf(o.get("kind").asString),
+                kind = kind,
                 sender = o.get("sender").asString,
                 minerKey = o.get("minerKey").asString,
                 row = o.get("row").asString,
@@ -181,6 +186,8 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
                 builtRound = o.optLong("builtRound"),
                 state = TransferState.valueOf(o.get("state").asString),
                 createdAt = o.get("createdAt").asLong,
+                // A claim fee without the field was written by 0.4.7.
+                feeVersion = if (kind == TransferKind.CLAIM_FEE) o.get("feeVersion")?.asInt ?: 1 else PendingTransfer.FEE_VERSION,
             )
             record.takeIf { storageKey(it.sender, it.kind, it.minerKey, it.row) == key }
         }

@@ -9,9 +9,12 @@ import com.frynetworks.fryapp.data.dashboard.repo.StakeRepository
 import com.frynetworks.fryapp.data.dashboard.repo.TxResolution
 import com.frynetworks.fryapp.data.dashboard.repo.TxResolver
 import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
+import com.frynetworks.fryapp.data.pending.ClaimFeeBinding
+import com.frynetworks.fryapp.data.pending.ClaimFeeBindingStore
 import com.frynetworks.fryapp.data.pending.PendingTransfer
 import com.frynetworks.fryapp.data.pending.PendingTransferStore
 import com.frynetworks.fryapp.data.pending.PendingTransferStoreTest
+import com.frynetworks.fryapp.data.pending.SharedPrefsClaimFeeBindingStore
 import com.frynetworks.fryapp.data.pending.SharedPrefsPendingTransferStore
 import com.frynetworks.fryapp.domain.ClaimState
 import com.frynetworks.fryapp.domain.FryAsset
@@ -69,12 +72,20 @@ class ClaimFeeBindingTest {
     private val prefs = PendingTransferStoreTest.FakePrefs()
     private val real = SharedPrefsPendingTransferStore(prefs)
     private var failRemove = false
-    private var failPut = false
+    private val bindingPrefs = PendingTransferStoreTest.FakePrefs()
+    private val bindingReal = SharedPrefsClaimFeeBindingStore(bindingPrefs)
+    private var failBindingPut = false
+    private var failBindingRemove = false
+    private val bindings: ClaimFeeBindingStore = object : ClaimFeeBindingStore by bindingReal {
+        override fun put(sender: String, minerKey: String, row: String, binding: ClaimFeeBinding) =
+            if (failBindingPut) false else bindingReal.put(sender, minerKey, row, binding)
+
+        override fun remove(sender: String, minerKey: String, row: String) =
+            if (failBindingRemove) false else bindingReal.remove(sender, minerKey, row)
+    }
     private val store: PendingTransferStore = object : PendingTransferStore by real {
         override fun remove(sender: String, kind: com.frynetworks.fryapp.data.pending.TransferKind, minerKey: String, row: String) =
             if (failRemove) false else real.remove(sender, kind, minerKey, row)
-
-        override fun put(record: PendingTransfer) = if (failPut) false else real.put(record)
     }
     private val session = TestSession.signedIn()
 
@@ -128,6 +139,7 @@ class ClaimFeeBindingTest {
     private fun vm() = ClaimViewModel(
         rewards, algod, miners, bridge, session, fixedClock(now),
         openUri = {}, pollDelayMillis = 0, optInRetryDelayMillis = 0, store = store, resolver = resolver, ioDispatcher = Dispatchers.Unconfined,
+        bindings = bindings, bindingDispatcher = Dispatchers.Unconfined,
     )
 
     private fun claim(vm: ClaimViewModel = vm()): ClaimViewModel {
@@ -144,6 +156,8 @@ class ClaimFeeBindingTest {
     private fun recordKey() = "$TEST_ADDRESS|CLAIM_FEE|$key|all"
 
     private fun json(): String? = prefs.map[recordKey()] as String?
+
+    private fun bindingJson(): String? = bindingPrefs.map[recordKey()] as String?
 
     private fun legacyJson() =
         """{"schemaVersion":1,"kind":"CLAIM_FEE","sender":"$TEST_ADDRESS","minerKey":"$key","row":"all","assetId":0,"amount":"${StakeRepository.CLAIM_FEE_MICROALGO}",""" +
@@ -165,6 +179,7 @@ class ClaimFeeBindingTest {
         assertTrue(second.uiState.value.state is ClaimState.Done)
         assertEquals("the second claim paid its own fee", 2, pays())
         assertEquals(null, json())
+        assertEquals(null, bindingJson())
     }
 
     // --- (b) a bound record is consumed only by its own claim -------------------------------------------------------------
@@ -228,13 +243,14 @@ class ClaimFeeBindingTest {
         custodial(ConfirmResultResponse(ok = false))
         val first = claim()
         assertEquals("CONFIRM_PENDING", failed(first).code)
-        val before = json()
-        assertNotNull(before)
+        val before = json() to bindingJson()
+        assertNotNull(before.first)
+        assertNotNull(before.second)
         repeat(5) {
             val vm = claim()
             assertEquals("TXN_PENDING", failed(vm).code)
             assertEquals(1, pays())
-            assertEquals("the record is untouched", before, json())
+            assertEquals("the record and its binding are untouched", before, json() to bindingJson())
         }
         assertEquals("the claim was requested once", 1, rewards.envelopeCalls.size)
     }
@@ -245,7 +261,7 @@ class ClaimFeeBindingTest {
         claim()
         val vm = claim()
         assertEquals("TXN_PENDING", failed(vm).code)
-        assertTrue(failed(vm).message.contains("still processing"))
+        assertTrue(failed(vm).message.contains("may still be processing"))
         assertNotNull(json())
         assertEquals(1, pays())
     }
@@ -266,7 +282,7 @@ class ClaimFeeBindingTest {
         userPays("G2", leg2)
         val second = claim()
         assertEquals("the same fee is reused", 1, pays())
-        val text = checkNotNull(json())
+        val text = checkNotNull(bindingJson())
         assertTrue("bound to the new envelope: $text", text.contains("G2") && text.contains(leg2Id) && !text.contains(leg1Id))
         assertTrue("rebound once: $text", text.contains("\"rebound\":true"))
         assertEquals("the new confirm failed too", "NETWORK_ERROR", failed(second).code)
@@ -278,13 +294,13 @@ class ClaimFeeBindingTest {
         verdicts[leg1Id] = TxResolution.Absent
         userPays("G2", leg2)
         claim()
-        val bound = json()
+        val bound = json() to bindingJson()
         verdicts[leg2Id] = TxResolution.Absent
         userPays("G3", leg1)
         val third = claim()
         assertEquals("TXN_PENDING", failed(third).code)
         assertEquals(1, pays())
-        assertEquals(bound, json())
+        assertEquals(bound, json() to bindingJson())
         assertEquals("no third envelope", 2, rewards.envelopeCalls.size)
     }
 
@@ -303,7 +319,7 @@ class ClaimFeeBindingTest {
 
     @Test
     fun `a binding that cannot be committed means the group is not signed`() = runTest {
-        failPut = true
+        failBindingPut = true
         userPays("G1", leg1)
         val vm = claim()
         assertEquals("TXN_RECORD_FAILED", failed(vm).code)
@@ -320,10 +336,79 @@ class ClaimFeeBindingTest {
         val first = claim()
         assertFalse(first.uiState.value.state is ClaimState.Done)
         assertTrue(rewards.confirmCalls.isEmpty())
-        assertFalse("not bound after an unsigned envelope", checkNotNull(json()).contains("binding"))
+        assertEquals("not bound after an unsigned envelope", null, bindingJson())
 
         val second = claim()
         assertTrue(second.uiState.value.state is ClaimState.Done)
+        assertEquals(1, pays())
+    }
+    // --- the binding lives beside the fee record, never without it ----------------------------------------------------------------
+
+    private fun bindingLiteral(txId: String) =
+        """{"schemaVersion":1,"mode":"custodial","claimTxId":"$txId"}"""
+
+    @Test
+    fun `a binding with no fee record is an orphan that is deleted before the fee is paid`() = runTest {
+        bindingPrefs.map[recordKey()] = bindingLiteral("OLDTX")
+        val vm = claim()
+        assertTrue(vm.uiState.value.state is ClaimState.Done)
+        assertEquals(1, pays())
+        assertEquals(null, bindingJson())
+    }
+
+    @Test
+    fun `an orphan binding that cannot be deleted blocks the claim before any fee is paid`() = runTest {
+        bindingPrefs.map[recordKey()] = bindingLiteral("OLDTX")
+        failBindingRemove = true
+        val vm = claim()
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(0, pays())
+    }
+
+    @Test
+    fun `an unreadable binding blocks the claim and is never read as unbound`() = runTest {
+        custodial(ConfirmResultResponse(ok = false))
+        claim()
+        bindingPrefs.map[recordKey()] = "{not json"
+        val vm = claim()
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(1, pays())
+        assertEquals("the claim was requested once", 1, rewards.envelopeCalls.size)
+    }
+
+    @Test
+    fun `a legacy record blocks whatever the binding store says`() = runTest {
+        prefs.map[recordKey()] = legacyJson()
+        bindingPrefs.map[recordKey()] = bindingLiteral("CUSTODIALTX")
+        val vm = claim()
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(0, pays())
+    }
+
+    @Test
+    fun `a spent fee whose binding cannot be removed blocks, and the next claim deletes the orphan and pays its own fee`() = runTest {
+        custodial(ConfirmResultResponse(ok = false))
+        claim()
+        custodial(ConfirmResultResponse(ok = true, txId = "CUSTODIALTX"))
+        failBindingRemove = true
+        val blocked = claim()
+        assertEquals("TXN_PENDING", failed(blocked).code)
+        assertEquals("the fee record went first", null, json())
+        failBindingRemove = false
+        val next = claim()
+        assertTrue(next.uiState.value.state is ClaimState.Done)
+        assertEquals(2, pays())
+    }
+
+    @Test
+    fun `a rejected signature after a rebind keeps the rebound flag so a second rebind stays refused`() = runTest {
+        failedUserPaysClaim()
+        verdicts[leg1Id] = TxResolution.Absent
+        userPays("G2", leg2)
+        fake.signBehaviour = listOf(FakeWalletBridge.SignBehaviour.Approve, FakeWalletBridge.SignBehaviour.Reject)
+        claim()
+        val text = checkNotNull(bindingJson())
+        assertTrue(text, text.contains("\"mode\":\"unbound\"") && text.contains("\"rebound\":true"))
         assertEquals(1, pays())
     }
 }

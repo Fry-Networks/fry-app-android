@@ -20,7 +20,9 @@ import com.frynetworks.fryapp.data.dashboard.repo.impl.MinerRepositoryImpl
 import com.frynetworks.fryapp.data.dashboard.repo.impl.RewardsRepositoryImpl
 import com.frynetworks.fryapp.data.dashboard.repo.impl.StakeRepositoryImpl
 import com.frynetworks.fryapp.data.dashboard.repo.impl.TxResolverImpl
+import com.frynetworks.fryapp.data.pending.ClaimFeeBindingStore
 import com.frynetworks.fryapp.data.pending.PendingTransferStore
+import com.frynetworks.fryapp.data.pending.SharedPrefsClaimFeeBindingStore
 import com.frynetworks.fryapp.data.pending.SharedPrefsPendingTransferStore
 import com.frynetworks.fryapp.network.dashboard.ServerClock
 import com.frynetworks.fryapp.network.dashboard.SessionEventBus
@@ -70,6 +72,12 @@ object DashboardRepositoryModule {
     @Singleton
     fun providePendingTransferStore(@ApplicationContext context: Context): PendingTransferStore =
         SharedPrefsPendingTransferStore(context.getSharedPreferences("fry_pending_transfer", Context.MODE_PRIVATE))
+
+    /** "fry_claim_fee_binding": which claim each paid fee belongs to; cleared by no sign-out path either. */
+    @Provides
+    @Singleton
+    fun provideClaimFeeBindingStore(@ApplicationContext context: Context): ClaimFeeBindingStore =
+        SharedPrefsClaimFeeBindingStore(context.getSharedPreferences("fry_claim_fee_binding", Context.MODE_PRIVATE))
 
     @Provides
     @Singleton

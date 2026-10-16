@@ -14,6 +14,10 @@ import com.frynetworks.fryapp.data.dashboard.repo.StakeRepository
 import com.frynetworks.fryapp.data.dashboard.repo.TxResolution
 import com.frynetworks.fryapp.data.dashboard.repo.TxResolver
 import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
+import com.frynetworks.fryapp.data.pending.BindingLookup
+import com.frynetworks.fryapp.data.pending.ClaimFeeBinding
+import com.frynetworks.fryapp.data.pending.ClaimFeeBindingStore
+import com.frynetworks.fryapp.data.pending.InMemoryClaimFeeBindingStore
 import com.frynetworks.fryapp.data.pending.InMemoryPendingTransferStore
 import com.frynetworks.fryapp.data.pending.PendingLookup
 import com.frynetworks.fryapp.data.pending.PendingTransfer
@@ -155,6 +159,10 @@ class ClaimViewModel(
     private val resolver: TxResolver = FailClosedTxResolver,
     /** Where the store (disk) is touched; production passes IO, the default runs inline. */
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
+    /** Which claim each paid fee belongs to (kept apart from [store] so the fee record's own writes are unchanged). */
+    private val bindings: ClaimFeeBindingStore = InMemoryClaimFeeBindingStore(),
+    /** Where [bindings] (disk) is touched; production passes IO, the default runs inline. */
+    private val bindingDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
 ) : ViewModel() {
 
     @Inject
@@ -169,9 +177,11 @@ class ClaimViewModel(
         inhibitor: InstallInhibitor,
         store: PendingTransferStore,
         resolver: TxResolver,
+        bindings: ClaimFeeBindingStore,
     ) : this(
         rewards, algod, miners, bridge, session, clock,
         openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor, store = store, resolver = resolver, ioDispatcher = Dispatchers.IO,
+        bindings = bindings, bindingDispatcher = Dispatchers.IO,
     )
 
     private val ui = MutableStateFlow(ClaimUiState())
@@ -375,9 +385,15 @@ class ClaimViewModel(
         val row = rowCode()
         val target = FeeTarget(address, key, row)
         var feeTxId: String? = null
+        var priorBinding: ClaimFeeBinding? = null
+        var rebind = false
         when (val prior = priorFee(address, key, row)) {
             PriorFee.None -> Unit
-            is PriorFee.Paid -> feeTxId = prior.txId
+            is PriorFee.Paid -> {
+                feeTxId = prior.txId
+                priorBinding = prior.binding
+                rebind = prior.rebind
+            }
             is PriorFee.Blocked -> {
                 failDirect(CODE_TXN_PENDING, prior.message)
                 return
@@ -471,8 +487,17 @@ class ClaimViewModel(
             ),
         )
         when (val state = ui.value.state) {
-            is ClaimState.AwaitingSignature -> signGroup(state.groupId, envelope, target)
-            ClaimState.Confirming -> pollCustodial(envelope.txId ?: return, target)
+            is ClaimState.AwaitingSignature -> {
+                // The fee is tied to this claim on disk before anything is signed.
+                if (!bindClaim(target, userPaysBinding(envelope, priorBinding, rebind))) return
+                signGroup(state.groupId, envelope, target)
+            }
+            ClaimState.Confirming -> {
+                val txId = envelope.txId ?: return
+                val rebound = priorBinding?.rebound == true || rebind
+                if (!bindClaim(target, ClaimFeeBinding(ClaimFeeBinding.CUSTODIAL, txId, envelope.groupId, null, rebound = rebound))) return
+                pollCustodial(txId, target)
+            }
             else -> return
         }
     }
@@ -494,11 +519,13 @@ class ClaimViewModel(
             throw e
         } catch (e: BridgeException) {
             clearSummary()
+            unbind(target)
             if (e.code == BridgeErrorCode.USER_REJECTED) dispatch(ClaimEvent.SignRejected) else failDirect(e)
             return
         } catch (e: IllegalStateException) {
             // A reply of the wrong shape (cancellation is rethrown above).
             clearSummary()
+            unbind(target)
             failDirect(e)
             return
         }
@@ -537,9 +564,49 @@ class ClaimViewModel(
 
     /** The claim is complete: this fee payment is spent. The sender, miner and row are those captured when the claim started. */
     private suspend fun onDone(target: FeeTarget) {
-        clearFee(target)
+        // Spent first, so that even a fee record that cannot be removed is never reused by a later claim.
+        if (!bindWrite { markConsumed(target) }) Log.w(LOG_TAG, "could not mark the claim fee as consumed")
+        if (clearFee(target)) {
+            if (!bindWrite { bindings.remove(target.sender, target.key, target.row) }) Log.w(LOG_TAG, "could not remove the claim fee binding")
+        }
         runCatching { rewards.refreshSummary(target.key) }
         runCatching { miners.refreshDetail(target.key) }
+    }
+
+    private fun markConsumed(target: FeeTarget): Boolean {
+        val found = bindings.get(target.sender, target.key, target.row) as? BindingLookup.Found ?: return true
+        return bindings.put(target.sender, target.key, target.row, found.binding.copy(consumed = true))
+    }
+
+    /** Ties the paid fee to the claim whose envelope was just received; false (and the claim failed) when that cannot be written. */
+    private suspend fun bindClaim(target: FeeTarget, binding: ClaimFeeBinding): Boolean {
+        if (bindWrite { bindings.put(target.sender, target.key, target.row, binding) }) return true
+        failDirect(CODE_RECORD_FAILED, RECORD_FAILED_MESSAGE)
+        return false
+    }
+
+    /** The user leg's id and last valid round come from its own bytes; only when they cannot be read is the bridge's decode used (without a round). */
+    private suspend fun userPaysBinding(envelope: ClaimEnvelopeResponse, prior: ClaimFeeBinding?, rebind: Boolean): ClaimFeeBinding {
+        val leg = envelope.unsignedUserLeg.orEmpty()
+        val parsed = SignedTxnReader.parse(leg)
+        val id = parsed?.txId ?: safely { bridge.decodeTxn(leg) }?.txId?.takeIf { it.isNotBlank() }
+        return ClaimFeeBinding(ClaimFeeBinding.USER_PAYS, id, envelope.groupId, parsed?.lastValid, rebound = prior?.rebound == true || rebind)
+    }
+
+    /**
+     * The group was never signed and the dashboard's confirm was never called, so the leg can never land: the fee is the same claim's again.
+     * The rebound flag is kept. A failed write leaves the binding, which then only resolves by the claim's own outcome.
+     */
+    private suspend fun unbind(target: FeeTarget) {
+        val written = bindWrite {
+            val found = bindings.get(target.sender, target.key, target.row) as? BindingLookup.Found
+            when {
+                found == null -> true
+                found.binding.rebound -> bindings.put(target.sender, target.key, target.row, ClaimFeeBinding(ClaimFeeBinding.UNBOUND, null, null, null, rebound = true))
+                else -> bindings.remove(target.sender, target.key, target.row)
+            }
+        }
+        if (!written) Log.w(LOG_TAG, "could not unbind the claim fee after an unsigned envelope")
     }
 
     /**
@@ -571,6 +638,10 @@ class ClaimViewModel(
     /** A store write once the payment may be on the network: a cancelled job still completes it. */
     private suspend fun <T> ioWrite(block: () -> T): T = withContext(NonCancellable + ioDispatcher) { block() }
 
+    private suspend fun <T> bindIo(block: () -> T): T = withContext(bindingDispatcher) { block() }
+
+    private suspend fun <T> bindWrite(block: () -> T): T = withContext(NonCancellable + bindingDispatcher) { block() }
+
     /** Who a claim attempt pays for, captured when it starts so a logout or account switch cannot redirect its clean-up. */
     private data class FeeTarget(val sender: String, val key: String, val row: String)
 
@@ -596,17 +667,92 @@ class ClaimViewModel(
         /** Nothing recorded, or the recorded payment was proven dead and cleared: the fee is to be paid. */
         data object None : PriorFee
 
-        data class Paid(val txId: String) : PriorFee
+        /** [rebind]: the fee's earlier claim never landed, so the same payment is used for a new envelope (once per record). */
+        data class Paid(val txId: String, val binding: ClaimFeeBinding? = null, val rebind: Boolean = false) : PriorFee
 
         data class Blocked(val message: String) : PriorFee
     }
 
     private suspend fun priorFee(address: String, key: String, row: String): PriorFee {
+        val target = FeeTarget(address, key, row)
         val record = when (val found = io { store.get(address, TransferKind.CLAIM_FEE, key, row) }) {
-            PendingLookup.None -> return PriorFee.None
+            PendingLookup.None -> return orphanBinding(target)
             PendingLookup.Unreadable -> return PriorFee.Blocked(UNKNOWN_FEE_MESSAGE)
             is PendingLookup.Found -> found.record
         }
+        if (record.feeVersion < PendingTransfer.FEE_VERSION) {
+            // Written by 0.4.7: nothing says which claim it paid for, so a confirmed one is never reused (only a dead one is cleared).
+            val fee = feeTransaction(record, address, key, row)
+            return if (fee is PriorFee.Paid) PriorFee.Blocked(UNKNOWN_FEE_MESSAGE) else fee
+        }
+        return when (val bound = bindIo { bindings.get(address, key, row) }) {
+            BindingLookup.Unreadable -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
+            BindingLookup.None -> feeTransaction(record, address, key, row)
+            is BindingLookup.Found -> when {
+                bound.binding.consumed -> removeSpent(target)
+                bound.binding.mode == ClaimFeeBinding.UNBOUND -> feeTransaction(record, address, key, row).withBinding(bound.binding)
+                else -> boundFee(record, bound.binding, target)
+            }
+        }
+    }
+
+    private fun PriorFee.withBinding(binding: ClaimFeeBinding): PriorFee = if (this is PriorFee.Paid) copy(binding = binding) else this
+
+    /** A binding with no fee record is left over from a fee that was cleared: it is deleted, and if that fails nothing proceeds. */
+    private suspend fun orphanBinding(target: FeeTarget): PriorFee {
+        if (bindIo { bindings.get(target.sender, target.key, target.row) } == BindingLookup.None) return PriorFee.None
+        val removed = bindWrite { bindings.remove(target.sender, target.key, target.row) }
+        return if (removed) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
+    }
+
+    /** The fee record then its binding are removed; either failing blocks (a binding left alone is an orphan the next claim deletes). */
+    private suspend fun removeSpent(target: FeeTarget): PriorFee {
+        if (!clearFee(target)) return PriorFee.Blocked(PENDING_FEE_MESSAGE)
+        return if (bindWrite { bindings.remove(target.sender, target.key, target.row) }) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
+    }
+
+    private enum class ClaimOutcome { CONFIRMED, ABSENT, UNKNOWN }
+
+    /**
+     * A fee bound to a claim: consumed when that claim completed; moved once to a new envelope only when the claim is proven never to have
+     * landed; anything else blocks and leaves the record as it is.
+     */
+    private suspend fun boundFee(record: PendingTransfer, binding: ClaimFeeBinding, target: FeeTarget): PriorFee {
+        val claimId = binding.claimTxId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
+        if (binding.mode == ClaimFeeBinding.CUSTODIAL) {
+            // The dashboard reports no terminal failure for a custodial claim, so it is never moved.
+            return if (custodialConfirmed(claimId)) removeSpent(target) else PriorFee.Blocked(PENDING_FEE_MESSAGE)
+        }
+        val feeTxId = record.txId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
+        return when (claimOutcome(claimId, binding.claimLastValid)) {
+            ClaimOutcome.CONFIRMED -> removeSpent(target)
+            ClaimOutcome.ABSENT -> if (binding.rebound) PriorFee.Blocked(PENDING_FEE_MESSAGE) else PriorFee.Paid(feeTxId, binding, rebind = true)
+            ClaimOutcome.UNKNOWN -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
+        }
+    }
+
+    private suspend fun custodialConfirmed(claimId: String): Boolean {
+        val polled = safely { rewards.claimConfirmCustodial(claimId) }
+        if (polled != null && (polled.ok == true || polled.success == true)) return true
+        val answer = safely { resolver.resolve(claimId, null) }
+        return answer is TxResolution.Confirmed && answer.txId == claimId
+    }
+
+    /** What became of the claim's user leg; Absent only with a known last valid round and the pool silent about it. */
+    private suspend fun claimOutcome(claimId: String, lastValid: Long?): ClaimOutcome {
+        val pool = safely { algod.txStatus(claimId) } ?: TxStatus.Unknown
+        if (pool is TxStatus.Confirmed) return ClaimOutcome.CONFIRMED
+        if (pool == TxStatus.InPool || pool is TxStatus.Rejected) return ClaimOutcome.UNKNOWN
+        val answer = safely { resolver.resolve(claimId, lastValid) } ?: TxResolution.Unknown
+        return when {
+            answer is TxResolution.Confirmed && answer.txId == claimId -> ClaimOutcome.CONFIRMED
+            answer == TxResolution.Absent && lastValid != null -> ClaimOutcome.ABSENT
+            else -> ClaimOutcome.UNKNOWN
+        }
+    }
+
+    /** The fee payment itself: confirmed (or becoming so) is paid, proven dead is cleared, anything else blocks. */
+    private suspend fun feeTransaction(record: PendingTransfer, address: String, key: String, row: String): PriorFee {
         val txId = record.txId ?: return unidentifiedFee(record)
         val pool = safely { algod.txStatus(txId) } ?: TxStatus.Unknown
         return when (pool) {
