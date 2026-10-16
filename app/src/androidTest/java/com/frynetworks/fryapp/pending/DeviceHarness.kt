@@ -162,7 +162,8 @@ class DeviceHarness(val context: Context, val hang: Hang) {
 
         override suspend fun currentRound(): Long? = ledger.read().algodRound
         override suspend fun poolHasNoRecord(txId: String): Boolean = txId !in ledger.read().chain
-        override suspend fun waitConfirmed(txId: String, rounds: Int) = Unit
+        // A real algod wait is a suspending network call: it observes cancellation, and so must this one.
+        override suspend fun waitConfirmed(txId: String, rounds: Int) = kotlinx.coroutines.yield()
     }
 
     /** Two indexers, one per URL, answering from the ledger: a JSON 404 naming the txid, or the transaction. */
