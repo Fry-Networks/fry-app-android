@@ -227,7 +227,8 @@ class DeviceHarness048(val context: Context, val hang: Hang048, private val optI
             val txId = requireNotNull(SignedTxnReader.parse(signedB64.single())?.txId) { "unreadable blob" }
             val isOptIn = signedB64.single() in optInBlobs
             ledger.update {
-                it.submits++
+                // In an opt-in scenario `submits` counts opt-ins only: the stake sheet goes on to a stake transfer after its opt-in lands.
+                if (!optInManaged || isOptIn) it.submits++
                 it.chain[txId] = it.algodRound
                 it.log += (if (isOptIn) "optin-submit#" else "submit#") + "${it.submits} $txId"
             }
