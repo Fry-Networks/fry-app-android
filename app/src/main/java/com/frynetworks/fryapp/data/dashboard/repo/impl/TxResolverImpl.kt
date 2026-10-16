@@ -101,7 +101,9 @@ class TxResolverImpl(
             val id = tx.strOrNull("id") ?: return null
             val body = tx.objOrNull(if (assetId == 0L) "payment-transaction" else "asset-transfer-transaction") ?: continue
             val sameAsset = assetId == 0L || body.numOrNull("asset-id") == assetId
-            if (sameAsset && body.strOrNull("receiver") == receiver && body.numOrNull("amount") == amountMicro) ids += id
+            // An indexer may leave out a zero `amount`: an asset transfer without one is a transfer of 0.
+            val amount = body.numOrNull("amount") ?: if (assetId != 0L && amountMicro == 0L) 0L else null
+            if (sameAsset && body.strOrNull("receiver") == receiver && amount == amountMicro) ids += id
         }
         return ids
     }

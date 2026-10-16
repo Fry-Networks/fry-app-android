@@ -4,7 +4,7 @@ import android.content.SharedPreferences
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 
-enum class TransferKind { STAKE, CLAIM_FEE }
+enum class TransferKind { STAKE, CLAIM_FEE, ASA_OPTIN }
 
 enum class TransferState {
     /** Signed and recorded; submit has not reported back (or may not have been reached). The txId is known. */
@@ -16,7 +16,8 @@ enum class TransferState {
 
 /**
  * A transfer that may be on the network. Holds no secret: addresses, ids, amounts and rounds only.
- * For a stake [row] is the stake context (`registration`, `node`, `verification:<tier>`); for a claim fee it is the reward row (`all` or its number).
+ * For a stake [row] is the stake context (`registration`, `node`, `verification:<tier>`); for a claim fee it is the reward row (`all` or its number);
+ * for an ASA opt-in the miner key is `-` and [row] is the asset id.
  */
 data class PendingTransfer(
     val schemaVersion: Int = SCHEMA_VERSION,
@@ -89,7 +90,7 @@ private fun storagePrefix(sender: String, kind: TransferKind) = "$sender|${kind.
 /** True when [blocked] holds the record's own key, or (for a stake, which blocks every miner) any key of its sender. */
 private fun isBlocked(record: PendingTransfer, blocked: Set<String>): Boolean = when (record.kind) {
     TransferKind.STAKE -> blocked.any { it.startsWith(storagePrefix(record.sender, record.kind)) }
-    TransferKind.CLAIM_FEE -> storageKey(record.sender, record.kind, record.minerKey, record.row) in blocked
+    TransferKind.CLAIM_FEE, TransferKind.ASA_OPTIN -> storageKey(record.sender, record.kind, record.minerKey, record.row) in blocked
 }
 
 /** SharedPreferences "fry_pending_transfer". Every write and clear is a synchronous `commit()`, never `apply()`. */
@@ -127,7 +128,7 @@ class SharedPrefsPendingTransferStore(private val prefs: SharedPreferences) : Pe
         if (isBlocked(record, blocked)) return false
         val taken = when (record.kind) {
             TransferKind.STAKE -> prefs.all.keys.any { it.startsWith(storagePrefix(record.sender, record.kind)) }
-            TransferKind.CLAIM_FEE -> prefs.contains(key)
+            TransferKind.CLAIM_FEE, TransferKind.ASA_OPTIN -> prefs.contains(key)
         }
         if (taken) return false
         return prefs.edit().putString(key, encode(record).toString()).commit()
@@ -231,7 +232,7 @@ class InMemoryPendingTransferStore : PendingTransferStore {
         if (isBlocked(record, blocked)) return false
         val taken = when (record.kind) {
             TransferKind.STAKE -> records.keys.any { it.startsWith(storagePrefix(record.sender, record.kind)) }
-            TransferKind.CLAIM_FEE -> key in records
+            TransferKind.CLAIM_FEE, TransferKind.ASA_OPTIN -> key in records
         }
         if (taken) return false
         records[key] = record

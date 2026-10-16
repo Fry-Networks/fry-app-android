@@ -92,6 +92,11 @@ private const val UNKNOWN_BROADCAST_MESSAGE =
     "A previous stake transfer may have been sent and is still pending. Do not try again: contact support so it can be checked."
 private const val LOG_TAG = "StakeViewModel"
 private const val CLEAR_ATTEMPTS = 3
+private const val OPTIN_MINER = "-"
+private const val PENDING_OPTIN_MESSAGE = "The opt-in may still be processing. Try again shortly."
+private const val UNKNOWN_OPTIN_MESSAGE =
+    "A previous opt-in may have been sent and is still pending. Do not try again: contact support so it can be checked."
+private const val OPTIN_RECORD_FAILED_MESSAGE = "The opt-in could not be prepared safely on this phone, so nothing was sent. Try again."
 private const val RECORD_FAILED_MESSAGE = "The stake could not be prepared safely on this phone, so nothing was sent. Try again."
 
 /** The record could not be written, so the transfer must not be submitted. */
@@ -433,11 +438,36 @@ class StakeViewModel(
     private suspend fun runOptIn() {
         val plan = ui.value.plan ?: return
         val address = address() ?: return
+        var recorded: PendingTransfer? = null
         try {
-            val txn = bridge.buildOptIn(address, plan.asset.id)
-            val signed = signSingle(txn)
-            bridge.submit(listOf(signed), WAIT_ROUNDS)
+            // An opt-in that may already be on the network is settled first, never sent a second time.
+            val prior = priorOptIn(address, plan.asset.id)
+            if (prior is OptInPrior.Blocked) {
+                failDirect(CODE_TXN_PENDING, prior.message)
+                return
+            }
+            if (prior == OptInPrior.Build) {
+                val txn = bridge.buildOptIn(address, plan.asset.id)
+                val builtRound = safely { algod.currentRound() }
+                val signed = signSingle(txn)
+                // Same record as the stake transfer: the id and rounds come from the signed bytes; only when they cannot be read is the
+                // bridge's decode used (with no last valid round); with neither the record is POSSIBLY_BROADCAST and always blocks.
+                val parsed = SignedTxnReader.parse(signed)
+                val knownId = parsed?.txId ?: safely { bridge.decodeTxn(txn) }?.txId?.takeIf { it.isNotBlank() }
+                val toSend = PendingTransfer(
+                    kind = TransferKind.ASA_OPTIN, sender = address, minerKey = OPTIN_MINER, row = plan.asset.id.toString(), assetId = plan.asset.id,
+                    amount = "0", amountMicro = 0L, receiver = address, txId = knownId, firstValid = parsed?.firstValid, lastValid = parsed?.lastValid,
+                    builtRound = builtRound, state = if (knownId == null) TransferState.POSSIBLY_BROADCAST else TransferState.PRE_SUBMIT,
+                    createdAt = clock.nowMillis(),
+                )
+                if (!ioWrite { store.putNew(toSend) }) throw RecordNotSaved()
+                recorded = toSend
+                val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()?.takeIf { it.isNotBlank() }
+                if (knownId != null && returned != null && returned != knownId) throw TxIdMismatch()
+                if (knownId == null && returned != null) identify(toSend, returned)
+            }
             val balance = algod.assetBalanceMicro(address, plan.asset.id)
+            if (balance != null) recorded?.let { clearOptIn(it) }
             dispatch(StakeEvent.OptInCompleted(balance != null, plan.asset.id))
             if (ui.value.state !is StakeState.Precheck) return
             if ((balance ?: 0L) < microFor(plan.amount)) {
@@ -447,13 +477,94 @@ class StakeViewModel(
             runPrecheckAndStake(plan)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: RecordNotSaved) {
+            clearSummary()
+            failDirect(CODE_RECORD_FAILED, OPTIN_RECORD_FAILED_MESSAGE)
+        } catch (e: TxIdMismatch) {
+            // Neither id can be trusted: keep the record, without an id, so only the account search can resolve it.
+            recorded?.let { downgradeToUnidentified(it) }
+            failDirect(CODE_TXN_PENDING, UNKNOWN_OPTIN_MESSAGE)
         } catch (e: BridgeException) {
             clearSummary()
-            if (e.code == BridgeErrorCode.USER_REJECTED) dispatch(StakeEvent.SignRejected) else failDirect(e)
+            val r = recorded
+            if (e.code == BridgeErrorCode.USER_REJECTED && r == null) {
+                dispatch(StakeEvent.SignRejected)
+            } else if (r != null && r.txId == null) {
+                failDirect(CODE_TXN_PENDING, UNKNOWN_OPTIN_MESSAGE)
+            } else {
+                failDirect(e)
+            }
         } catch (e: Exception) {
             clearSummary()
-            failDirect(e)
+            val r = recorded
+            if (r != null && r.txId == null) failDirect(CODE_TXN_PENDING, UNKNOWN_OPTIN_MESSAGE) else failDirect(e)
         }
+    }
+
+    private sealed interface OptInPrior {
+        /** Nothing recorded, or the recorded opt-in was proven dead and cleared: one is to be built. */
+        data object Build : OptInPrior
+
+        /** The wallet is opted in (the recorded opt-in landed, or something else did it): nothing to send. */
+        data object Opted : OptInPrior
+
+        data class Blocked(val message: String) : OptInPrior
+    }
+
+    /** Settles a recorded opt-in: opted in (or confirmed) is cleared and continued, proven dead is cleared and rebuilt, anything else blocks. */
+    private suspend fun priorOptIn(address: String, assetId: Long): OptInPrior {
+        val record = when (val found = io { store.get(address, TransferKind.ASA_OPTIN, OPTIN_MINER, assetId.toString()) }) {
+            PendingLookup.None -> return OptInPrior.Build
+            PendingLookup.Unreadable -> return OptInPrior.Blocked(UNKNOWN_OPTIN_MESSAGE)
+            is PendingLookup.Found -> found.record
+        }
+        // Opted in is the one thing an opt-in is for, whatever became of the recorded transaction.
+        if (safely { algod.isOptedIn(address, assetId) } == true) return settledOptIn(record, true)
+        val txId = record.txId ?: return unidentifiedOptIn(record)
+        val pool = safely { algod.txStatus(txId) } ?: TxStatus.Unknown
+        return when (pool) {
+            is TxStatus.Confirmed -> settledOptIn(record, false)
+            TxStatus.InPool -> try {
+                algod.waitConfirmed(txId, WAIT_ROUNDS)
+                settledOptIn(record, false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                OptInPrior.Blocked(PENDING_OPTIN_MESSAGE)
+            }
+            is TxStatus.Rejected -> OptInPrior.Blocked(PENDING_OPTIN_MESSAGE)
+            TxStatus.Absent, TxStatus.Unknown -> {
+                val answer = safely { resolver.resolve(txId, record.lastValid) } ?: TxResolution.Unknown
+                when {
+                    answer is TxResolution.Confirmed && answer.txId == txId -> settledOptIn(record, false)
+                    answer == TxResolution.Absent && record.lastValid != null ->
+                        if (clearOptIn(record)) OptInPrior.Build else OptInPrior.Blocked(PENDING_OPTIN_MESSAGE)
+                    else -> OptInPrior.Blocked(PENDING_OPTIN_MESSAGE)
+                }
+            }
+        }
+    }
+
+    /** An opt-in handed to submit with no id to resume from: only the account search can identify it; never cleared automatically. */
+    private suspend fun unidentifiedOptIn(record: PendingTransfer): OptInPrior {
+        val found = safely { resolver.findTransfer(record.sender, record.receiver, record.assetId, record.amountMicro, record.firstValid ?: record.builtRound) }
+        if (found !is TxResolution.Confirmed) return OptInPrior.Blocked(UNKNOWN_OPTIN_MESSAGE)
+        val identified = record.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)
+        if (!ioWrite { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending opt-in") // the unidentified record stays and blocks
+        return settledOptIn(identified, false)
+    }
+
+    /** The recorded opt-in is on the chain: its record goes, and only if it really went does the flow carry on (opted in, else a new one). */
+    private suspend fun settledOptIn(record: PendingTransfer, optedIn: Boolean): OptInPrior {
+        if (!clearOptIn(record)) return OptInPrior.Blocked(PENDING_OPTIN_MESSAGE)
+        val opted = optedIn || safely { algod.isOptedIn(record.sender, record.assetId) } == true
+        return if (opted) OptInPrior.Opted else OptInPrior.Build
+    }
+
+    private suspend fun clearOptIn(record: PendingTransfer): Boolean {
+        val cleared = ioWrite { (1..CLEAR_ATTEMPTS).any { store.remove(record.sender, TransferKind.ASA_OPTIN, record.minerKey, record.row) } }
+        if (!cleared) Log.w(LOG_TAG, "could not clear the opt-in record after $CLEAR_ATTEMPTS tries")
+        return cleared
     }
 
     private suspend fun runPrecheckAndStake(plan: StakeState.Ready) {

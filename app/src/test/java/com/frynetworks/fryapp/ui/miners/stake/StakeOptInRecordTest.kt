@@ -131,7 +131,7 @@ class StakeOptInRecordTest {
         }
 
         override suspend fun submit(signedB64: List<String>, waitRounds: Int): List<String> {
-            val isOptIn = signedB64.singleOrNull() == blob
+            val isOptIn = signedB64.singleOrNull().let { it == blob || it?.startsWith("signed(optin|") == true }
             if (isOptIn) optInSubmits++
             onSubmit()
             fake.submitted += signedB64
