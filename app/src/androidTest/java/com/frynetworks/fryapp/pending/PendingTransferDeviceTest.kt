@@ -52,6 +52,8 @@ class PendingTransferDeviceTest {
             "crash-before-remove" -> crashBeforeRemove(context, phase!!)
             "update-survival" -> crashAfterSubmit(context, phase!!, updateCheck = true)
             "claim-fee" -> claimFee(context, phase!!)
+            "claim-fee-repeat" -> claimFeeRepeat(context, phase!!)
+            "cancel-after-submit" -> cancelAfterSubmit(context, phase!!)
             "logout" -> logout(context, phase!!)
             "different-sender" -> differentSender(context, phase!!)
             else -> throw Failure("unknown scenario $scenario")
@@ -168,6 +170,64 @@ class PendingTransferDeviceTest {
             check(s.signs == 1, "signs=${s.signs}")
             check(feeRecord(h) == null, "the spent fee record was not cleared")
             report(h, "claim done on the first fee")
+        }
+        else -> throw Failure("no phase $phase")
+    }
+
+    /** The corrected fee rule: a paid fee is reused through repeated REWARD_ALREADY_CLAIMING, and cleared only by the claim's success. */
+    private fun claimFeeRepeat(context: android.content.Context, phase: Int) = when (phase) {
+        1, 2 -> {
+            val h = DeviceHarness(context, Hang.ENVELOPE_ALREADY_CLAIMING)
+            if (phase == 1) {
+                h.resetWorld()
+                h.ledger.setRounds(66_029_500, 66_029_500, 66_029_500)
+            }
+            val vm = h.claimVm(h.session(TEST_ADDRESS))
+            vm.start(h.key)
+            await("claim preview") { vm.uiState.value.state is ClaimState.Preview }
+            vm.confirm()
+            await("claim failed") { vm.uiState.value.state is ClaimState.Failed }
+            val failed = vm.uiState.value.state as ClaimState.Failed
+            check(failed.code == "REWARD_ALREADY_CLAIMING", "phase $phase ended in ${failed.code}")
+            val s = h.ledger.read()
+            check(s.submits == 1 && s.chain.keys == setOf(Blobs.FEE_ID), "fee submits=${s.submits} chain=${s.chain.keys}")
+            check(feeRecord(h)?.txId == Blobs.FEE_ID, "the confirmed fee record was cleared by REWARD_ALREADY_CLAIMING")
+            report(h, "REWARD_ALREADY_CLAIMING, fee record kept")
+        }
+        3 -> {
+            val h = DeviceHarness(context, Hang.NONE)
+            val vm = h.claimVm(h.session(TEST_ADDRESS))
+            vm.start(h.key)
+            await("claim preview") { vm.uiState.value.state is ClaimState.Preview }
+            vm.confirm()
+            await("claim done") { vm.uiState.value.state.let { it is ClaimState.Done || it is ClaimState.Failed } }
+            check(vm.uiState.value.state is ClaimState.Done, "claim ended in ${vm.uiState.value.state}")
+            val s = h.ledger.read()
+            check(s.submits == 1 && s.signs == 1, "fee submits=${s.submits} signs=${s.signs}: the fee was paid again")
+            check(feeRecord(h) == null, "the fee record was not cleared by the claim's success")
+            report(h, "claim succeeded on the first fee, record cleared")
+        }
+        else -> throw Failure("no phase $phase")
+    }
+
+    /** MEDIUM-1: the job is cancelled the moment submit returns; the record must still be there, with the right txid, for the next process. */
+    private fun cancelAfterSubmit(context: android.content.Context, phase: Int) = when (phase) {
+        1 -> {
+            val h = DeviceHarness(context, Hang.CANCEL_AFTER_SUBMIT)
+            h.resetWorld()
+            runStake(h, TEST_ADDRESS)
+            awaitReached(h)
+            Thread.sleep(1_000) // let the cancelled job unwind
+            val s = h.ledger.read()
+            check(s.submits == 1 && s.chain.keys == setOf(Blobs.STAKE_1500_ID), "submits=${s.submits} chain=${s.chain.keys}")
+            check(s.recorded.isEmpty(), "dashboard recorded ${s.recorded} after the cancel")
+            val r = record(h, TEST_ADDRESS)
+            check(r != null && r.txId == Blobs.STAKE_1500_ID && r.lastValid == 1_500L, "record after the cancel: $r")
+            report(h, "job cancelled after submit, record intact")
+        }
+        2 -> {
+            val h = DeviceHarness(context, Hang.NONE)
+            resumeToDone(h, TEST_ADDRESS, expectSigns = 1, expectRecordCalls = 1)
         }
         else -> throw Failure("no phase $phase")
     }
@@ -320,7 +380,7 @@ class PendingTransferDeviceTest {
     /** One line the driver greps: `PHASE_RESULT scenario=.. phase=.. submits=.. signs=.. recorded=.. :: note`. */
     private fun report(h: DeviceHarness, note: String) {
         val s = h.ledger.read()
-        val line = "PHASE_RESULT scenario=${args.getString("scenario")} phase=${args.getString("phase")} submits=${s.submits} signs=${s.signs} " +
+        val line = "PHASE_RESULT scenario=${args.getString("scenario")} phase=${args.getString("phase")} pid=${android.os.Process.myPid()} submits=${s.submits} signs=${s.signs} " +
             "recorded=${s.recorded.size} :: $note"
         instrumentation.sendStatus(Activity.RESULT_OK, Bundle().apply { putString(Instrumentation_STREAM, line + "\n") })
     }

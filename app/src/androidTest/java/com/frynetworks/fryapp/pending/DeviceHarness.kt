@@ -49,7 +49,15 @@ import java.io.FileOutputStream
 import java.math.BigDecimal
 
 /** Where a phase deliberately stops forever, as a process killed at that instant would. */
-enum class Hang { NONE, BEFORE_NETWORK, BEFORE_RECORD, BEFORE_REMOVE, BEFORE_ENVELOPE }
+enum class Hang {
+    NONE, BEFORE_NETWORK, BEFORE_RECORD, BEFORE_REMOVE, BEFORE_ENVELOPE,
+
+    /** Not a stop: the claim envelope answers REWARD_ALREADY_CLAIMING (409), as the dashboard does while another claim is in flight. */
+    ENVELOPE_ALREADY_CLAIMING,
+
+    /** Not a stop: the job that called submit is cancelled the moment submit has reached the chain and returns. */
+    CANCEL_AFTER_SUBMIT,
+}
 
 /**
  * The whole fake world of one scenario, kept in the debug app's own filesDir so it outlives every process kill and `install -r`:
@@ -203,6 +211,10 @@ class DeviceHarness(val context: Context, val hang: Hang) {
                 it.chain[txId] = it.algodRound
                 it.log += "submit#${it.submits} $txId"
             }
+            if (hang == Hang.CANCEL_AFTER_SUBMIT) {
+                kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+                reached.complete(Unit)
+            }
             return listOf(txId)
         }
     }
@@ -228,6 +240,9 @@ class DeviceHarness(val context: Context, val hang: Hang) {
             if (hang == Hang.BEFORE_ENVELOPE) {
                 reached.complete(Unit)
                 awaitCancellation()
+            }
+            if (hang == Hang.ENVELOPE_ALREADY_CLAIMING) {
+                throw com.frynetworks.fryapp.network.dashboard.DashboardException("REWARD_ALREADY_CLAIMING", "in flight", httpStatus = 409)
             }
             return rewardsBacking.claimEnvelope(minerKey, no)
         }
