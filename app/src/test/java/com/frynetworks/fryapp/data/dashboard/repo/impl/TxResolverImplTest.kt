@@ -1,6 +1,7 @@
 package com.frynetworks.fryapp.data.dashboard.repo.impl
 
 import com.frynetworks.fryapp.data.dashboard.api.IndexerApi
+import com.frynetworks.fryapp.data.dashboard.api.boundedIndexerClient
 import com.frynetworks.fryapp.data.dashboard.repo.AlgodRepository
 import com.frynetworks.fryapp.data.dashboard.repo.TxResolution
 import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
@@ -14,6 +15,8 @@ import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -37,6 +40,7 @@ class TxResolverImplTest {
         var txContentType = "application/json"
         var healthCode = 200
         var healthBody: String? = null
+        var redirectTo: String? = null
         var accountsCode = 200
         var accountsBody = """{"current-round":1,"transactions":[]}"""
         val requests = mutableListOf<RecordedRequest>()
@@ -51,6 +55,7 @@ class TxResolverImplTest {
                         path.startsWith("/v2/transactions/") ->
                             MockResponse().setResponseCode(txCode).setBody(txBody.orEmpty()).setHeader("Content-Type", txContentType).also {
                                 if (txPolicy != SocketPolicy.KEEP_OPEN) it.socketPolicy = txPolicy
+                                redirectTo?.let { target -> it.setHeader("Location", target) }
                             }
                         path.startsWith("/v2/accounts/") -> MockResponse().setResponseCode(accountsCode).setBody(accountsBody).setHeader("Content-Type", "application/json")
                         else -> MockResponse().setResponseCode(500)
@@ -90,8 +95,16 @@ class TxResolverImplTest {
 
     @Before
     fun setUp() {
-        val api = Retrofit.Builder().baseUrl(a.server.url("/")).client(OkHttpClient()).build().create(IndexerApi::class.java)
-        resolver = TxResolverImpl(algod, api, listOf(a.url(), b.url()), callTimeoutMillis = 600)
+        // the two https indexer hosts are answered by the two mock servers: the interceptor only swaps the host and port
+        val rewrite = okhttp3.Interceptor { chain ->
+            val original = chain.request()
+            val target = if (original.url.host == "idx-a.test") a.server else b.server
+            val url = original.url.newBuilder().scheme("http").host(target.hostName).port(target.port).build()
+            chain.proceed(original.newBuilder().url(url).build())
+        }
+        val client = boundedIndexerClient(OkHttpClient.Builder().addInterceptor(rewrite).build())
+        val api = Retrofit.Builder().baseUrl("https://idx-a.test/").client(client).build().create(IndexerApi::class.java)
+        resolver = TxResolverImpl(algod, api, INDEXERS, callTimeoutMillis = 600)
         // the baseline: everything past lv and nothing known
         algod.round = lv + 1
         a.round(lv + 1).txBody = notFound
@@ -105,6 +118,8 @@ class TxResolverImplTest {
     }
 
     companion object {
+        val INDEXERS = listOf("https://idx-a.test", "https://idx-b.test")
+
         fun health(round: Long, db: Boolean = true, migrating: Boolean = false) =
             """{"data":{},"db-available":$db,"is-migrating":$migrating,"message":"$round","round":$round,"version":"3.10.0-ndly"}"""
     }
@@ -412,5 +427,102 @@ class TxResolverImplTest {
         val path = a.requests.single { it.path!!.startsWith("/v2/accounts/") }.path!!
         assertTrue(path, path.startsWith("/v2/accounts/$sender/transactions?"))
         assertTrue(path, path.contains("min-round=500"))
+    }
+
+    // --- the two indexers are exactly two distinct https hosts ---------------------------------------------------------------
+
+    private fun build(urls: List<String>) = TxResolverImpl(algod, a.api(), urls)
+
+    private fun Idx.api(): IndexerApi = Retrofit.Builder().baseUrl("https://idx-a.test/").build().create(IndexerApi::class.java)
+
+    @Test
+    fun `an empty indexer list is refused`() {
+        assertThrows(IllegalArgumentException::class.java) { build(emptyList()) }
+    }
+
+    @Test
+    fun `a single indexer is refused`() {
+        assertThrows(IllegalArgumentException::class.java) { build(listOf("https://idx-a.test")) }
+    }
+
+    @Test
+    fun `the same indexer twice is refused`() {
+        assertThrows(IllegalArgumentException::class.java) { build(listOf("https://idx-a.test", "https://idx-a.test")) }
+    }
+
+    @Test
+    fun `a plain http indexer is refused`() {
+        assertThrows(IllegalArgumentException::class.java) { build(listOf("https://idx-a.test", "http://idx-b.test")) }
+    }
+
+    @Test
+    fun `three indexers are refused`() {
+        assertThrows(IllegalArgumentException::class.java) { build(listOf("https://a.test", "https://b.test", "https://c.test")) }
+    }
+
+    @Test
+    fun `two distinct https indexers are accepted`() {
+        build(INDEXERS)
+    }
+
+    // --- the bounded client: redirects, timeout and body size -------------------------------------------------------------------
+
+    @Test
+    fun `the indexer client never follows redirects and has a 15 second call timeout`() {
+        val bounded = boundedIndexerClient(OkHttpClient())
+        assertFalse(bounded.followRedirects)
+        assertFalse(bounded.followSslRedirects)
+        assertEquals(15_000, bounded.callTimeoutMillis)
+    }
+
+    @Test
+    fun `a redirect from an indexer is Unknown and its target is never contacted`() = runTest {
+        a.txCode = 302
+        a.txBody = ""
+        val elsewhere = MockWebServer().also { it.start() }
+        try {
+            a.redirectTo = elsewhere.url("/v2/transactions/$txId").toString()
+            assertEquals(TxResolution.Unknown, resolve())
+            assertEquals(0, elsewhere.requestCount)
+        } finally {
+            elsewhere.shutdown()
+        }
+    }
+
+    @Test
+    fun `a reply over the size cap is Unknown even when it is the right JSON`() = runTest {
+        val padding = "x".repeat(TxResolverImpl.MAX_BODY_BYTES + 10)
+        a.txBody = """{"message":"no transaction found for transaction id: $txId","pad":"$padding"}"""
+        assertEquals(TxResolution.Unknown, resolve())
+    }
+
+    @Test
+    fun `a found reply over the size cap is not Confirmed`() = runTest {
+        val padding = "x".repeat(TxResolverImpl.MAX_BODY_BYTES + 10)
+        a.txCode = 200
+        a.txBody = """{"transaction":{"id":"$txId","confirmed-round":900},"pad":"$padding"}"""
+        assertEquals(TxResolution.Unknown, resolve())
+    }
+
+    @Test
+    fun `a reply just under the size cap is read`() = runTest {
+        a.txCode = 200
+        val head = """{"transaction":{"id":"$txId","confirmed-round":900},"pad":""""
+        a.txBody = head + "x".repeat(TxResolverImpl.MAX_BODY_BYTES - head.length - 10) + "\"}"
+        assertEquals(TxResolution.Confirmed(txId, 900), resolve())
+    }
+
+    @Test
+    fun `a health reply without is-migrating is Unknown`() = runTest {
+        a.healthBody = """{"db-available":true,"message":"x","round":${lv + 1}}"""
+        assertEquals(TxResolution.Unknown, resolve())
+    }
+
+    @Test
+    fun `a second matching candidate on only one indexer makes the transfer Unknown`() = runTest {
+        a.accountsBody = page(axfer("TXA"), axfer("TXB"))
+        b.accountsBody = page(axfer("TXA"))
+        assertEquals(TxResolution.Unknown, find())
+        assertEquals(TxResolution.Unknown, resolver.findTransfer(sender, receiver, 2_681_521_901, 5_000_000, 500))
     }
 }

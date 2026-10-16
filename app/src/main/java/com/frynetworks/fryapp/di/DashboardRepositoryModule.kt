@@ -5,6 +5,7 @@ import com.frynetworks.fryapp.data.DeviceDao
 import com.frynetworks.fryapp.data.dashboard.api.AlgodApi
 import com.frynetworks.fryapp.data.dashboard.api.DashboardApi
 import com.frynetworks.fryapp.data.dashboard.api.IndexerApi
+import com.frynetworks.fryapp.data.dashboard.api.boundedIndexerClient
 import com.frynetworks.fryapp.data.dashboard.db.AssetTotalsCacheDao
 import com.frynetworks.fryapp.data.dashboard.db.MinerDetailCacheDao
 import com.frynetworks.fryapp.data.dashboard.db.RemoteMinerDao
@@ -29,6 +30,7 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import javax.inject.Singleton
 
@@ -50,14 +52,18 @@ object DashboardRepositoryModule {
     @Singleton
     fun provideAlgodApi(@AlgodClient retrofit: Retrofit): AlgodApi = retrofit.create(AlgodApi::class.java)
 
-    /** Absolute-URL GETs against the two public indexers, on the same plain client as algod (no cookies, no tokens). */
+    /** Absolute-URL GETs against the two public indexers on a bounded client: 15 s per call, no redirects. */
     @Provides
     @Singleton
-    fun provideIndexerApi(@AlgodClient retrofit: Retrofit): IndexerApi = retrofit.create(IndexerApi::class.java)
+    fun provideIndexerApi(@AlgodClient retrofit: Retrofit): IndexerApi = retrofit.bounded().create(IndexerApi::class.java)
 
+    /** The resolver reads algod through the same bounded client, not the shared one with its 60 s long-poll timeout. */
     @Provides
     @Singleton
-    fun provideTxResolver(algod: AlgodRepository, indexer: IndexerApi): TxResolver = TxResolverImpl(algod, indexer)
+    fun provideTxResolver(@AlgodClient retrofit: Retrofit, indexer: IndexerApi): TxResolver =
+        TxResolverImpl(AlgodRepositoryImpl(retrofit.bounded().create(AlgodApi::class.java)), indexer)
+
+    private fun Retrofit.bounded(): Retrofit = newBuilder().callFactory(boundedIndexerClient(callFactory() as OkHttpClient)).build()
 
     /** "fry_pending_transfer": no sign-out, session-clear or wallet-disconnect path deletes this file. */
     @Provides

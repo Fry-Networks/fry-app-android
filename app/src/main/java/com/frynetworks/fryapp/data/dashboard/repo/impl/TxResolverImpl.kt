@@ -16,6 +16,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.ResponseBody
 
 /**
  * [TxResolution.Absent] needs ALL of: algod's pool answered 404 for the txid and algod's round is past `lastValid`; BOTH indexers
@@ -31,6 +32,12 @@ class TxResolverImpl(
     /** Where the network calls run; the timeout is measured on its clock. */
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : TxResolver {
+
+    init {
+        require(indexerUrls.size == 2 && indexerUrls.distinct().size == 2 && indexerUrls.all { it.startsWith("https://") }) {
+            "exactly two distinct https indexers are required"
+        }
+    }
 
     private sealed interface Reply {
         data class Ok(val json: JsonObject) : Reply
@@ -103,8 +110,8 @@ class TxResolverImpl(
         val json = (reply as? Reply.Ok)?.json ?: return null
         val db = json.get("db-available")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
         if (db != true) return null
-        val migrating = json.get("is-migrating")
-        if (migrating != null && !(migrating.isJsonPrimitive && migrating.asJsonPrimitive.isBoolean && !migrating.asBoolean)) return null
+        val migrating = json.get("is-migrating")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+        if (migrating != false) return null
         return json.numOrNull("round")
     }
 
@@ -122,7 +129,7 @@ class TxResolverImpl(
     private suspend fun read(url: String): Reply {
         val response = indexer.get(url)
         try {
-            val text = (if (response.isSuccessful) response.body()?.string() else response.errorBody()?.string()) ?: return Reply.Bad
+            val text = readCapped(if (response.isSuccessful) response.body() else response.errorBody()) ?: return Reply.Bad
             val json = runCatching { JsonParser.parseString(text) }.getOrNull()?.takeIf { it.isJsonObject }?.asJsonObject ?: return Reply.Bad
             return when (response.code()) {
                 200 -> Reply.Ok(json)
@@ -133,6 +140,14 @@ class TxResolverImpl(
             response.errorBody()?.close()
             response.body()?.close()
         }
+    }
+
+    /** The body as text, or null when it is missing or longer than [MAX_BODY_BYTES]. */
+    private fun readCapped(body: ResponseBody?): String? {
+        val source = body?.source() ?: return null
+        source.request(MAX_BODY_BYTES + 1L)
+        if (source.buffer.size > MAX_BODY_BYTES) return null
+        return source.buffer.readUtf8()
     }
 
     private suspend fun <T> guarded(block: suspend () -> T): T? = try {
@@ -153,6 +168,9 @@ class TxResolverImpl(
 
     companion object {
         const val CALL_TIMEOUT_MILLIS = 15_000L
+
+        /** An indexer reply longer than this is not read: it is Unknown, whatever it says. */
+        const val MAX_BODY_BYTES = 64 * 1024
         private const val PAGE = 100
         private val TXID = Regex("[A-Z2-7]{52}")
         private val ADDRESS = Regex("[A-Z2-7]{58}")
