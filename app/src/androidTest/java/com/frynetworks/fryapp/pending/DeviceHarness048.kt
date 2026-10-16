@@ -68,6 +68,45 @@ enum class Hang048 {
     CONFIRM_NEVER,
 }
 
+/** A real-framed signed payment blob whose id differs per [n] (fv/lv shift by n): the fee fake chain never sees one id twice. */
+object FeeBlobs048 {
+    fun signed(n: Int): String {
+        val who = ByteArray(32) { 7 }
+        val txn = ByteArrayOutputStream().apply {
+            write(0x80 or 7)
+            str("type"); str("pay")
+            str("snd"); bin(who)
+            str("rcv"); bin(who)
+            str("amt"); uint(1000)
+            str("fv"); uint(Blobs.FEE_LV - 1000 + n)
+            str("lv"); uint(Blobs.FEE_LV + n)
+            str("note"); bin(ByteArray(1) { n.toByte() })
+        }.toByteArray()
+        val out = ByteArrayOutputStream().apply {
+            write(0x80 or 2)
+            str("sig"); bin(ByteArray(64))
+            str("txn"); write(txn)
+        }
+        return Base64.getEncoder().encodeToString(out.toByteArray())
+    }
+
+    private fun ByteArrayOutputStream.str(s: String) {
+        write(0xa0 or s.length)
+        write(s.toByteArray(Charsets.US_ASCII))
+    }
+
+    private fun ByteArrayOutputStream.bin(b: ByteArray) {
+        write(0xc4)
+        write(b.size)
+        write(b)
+    }
+
+    private fun ByteArrayOutputStream.uint(v: Long) {
+        write(0xcf)
+        for (i in 7 downTo 0) write(((v shr (8 * i)) and 0xFF).toInt())
+    }
+}
+
 /** A real-framed signed ASA opt-in blob (`{sig, txn}` msgpack, zero signature, never broadcast): its id, fv and lv are read from its own bytes. */
 object OptInBlobs048 {
     const val FV = 1_000L
@@ -214,8 +253,9 @@ class DeviceHarness048(val context: Context, val hang: Hang048, private val optI
                     if (n % 2 == 1) Blobs.STAKE_1500 else Blobs.STAKE_5000
                 }
                 only.txnB64.startsWith("pay|") -> {
-                    ledger.update { it.signs++ }
-                    Blobs.FEE
+                    // A distinct fee blob (and so txId) per signature, as every real payment has.
+                    val n = ledger.update { it.signs++; it.signs }
+                    FeeBlobs048.signed(n)
                 }
                 else -> return fake
             }

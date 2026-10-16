@@ -127,8 +127,8 @@ class PendingTransferDevice048Test {
             h.ledger.setRounds(1_501, 1_501, 1_501)
             val vm = stakeAtOptIn(h, DeviceHarness.REGISTRATION)
             vm.optIn()
-            await("opt-in rebuilt") { vm.uiState.value.state.let { it != null && it !is StakeState.OptInRequired } }
-            check(vm.uiState.value.state !is StakeState.Failed, "ended in ${vm.uiState.value.state}")
+            await("stake terminal") { vm.uiState.value.state.let { it is StakeState.Done || it is StakeState.Failed } }
+            check(vm.uiState.value.state is StakeState.Done, "ended in ${vm.uiState.value.state}")
             check(optInSubmits(h) == 1, "opt-in submits=${optInSubmits(h)}")
             check(optInRecord(h, FryAsset.TFRY) == null, "the opt-in record was not cleared")
             report(h, "dead record cleared, exactly one opt-in submitted")
