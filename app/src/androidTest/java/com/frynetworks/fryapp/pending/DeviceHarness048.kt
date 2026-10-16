@@ -173,6 +173,9 @@ class DeviceHarness048(val context: Context, val hang: Hang048, private val optI
 
         override suspend fun assetBalanceMicro(address: String, assetId: Long): Long? =
             if (optInManaged && managedAssets.any { it.id == assetId }) (if (optedIn(assetId)) 200_000_000L else null) else backing.assetBalanceMicro(address, assetId)
+
+        // `by backing` forwards isOptedIn to the backing fake, whose own assetBalanceMicro would not see the chain: say it from this object's balance.
+        override suspend fun isOptedIn(address: String, assetId: Long): Boolean = assetBalanceMicro(address, assetId) != null
     }
 
     val indexer = object : IndexerApi {
