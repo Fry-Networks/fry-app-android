@@ -7,6 +7,7 @@ import com.frynetworks.fryapp.auth.SessionState
 import com.frynetworks.fryapp.auth.SignOutUseCase
 import com.frynetworks.fryapp.data.pending.PendingLookup
 import com.frynetworks.fryapp.data.pending.PendingTransfer
+import com.frynetworks.fryapp.data.pending.SharedPrefsPendingTransferStore
 import com.frynetworks.fryapp.data.pending.TransferKind
 import com.frynetworks.fryapp.data.pending.TransferState
 import com.frynetworks.fryapp.domain.ClaimState
@@ -52,8 +53,9 @@ class PendingTransferDeviceTest {
             "crash-before-remove" -> crashBeforeRemove(context, phase!!)
             "update-survival" -> crashAfterSubmit(context, phase!!, updateCheck = true)
             "claim-fee" -> claimFee(context, phase!!)
-            "claim-fee-repeat" -> claimFeeRepeat(context, phase!!)
+            "claim-already-claiming" -> claimAlreadyClaiming(context, phase!!)
             "cancel-after-submit" -> cancelAfterSubmit(context, phase!!)
+            "cancel-during-downgrade" -> cancelDuringDowngrade(context, phase!!)
             "logout" -> logout(context, phase!!)
             "different-sender" -> differentSender(context, phase!!)
             else -> throw Failure("unknown scenario $scenario")
@@ -175,7 +177,7 @@ class PendingTransferDeviceTest {
     }
 
     /** The corrected fee rule: a paid fee is reused through repeated REWARD_ALREADY_CLAIMING, and cleared only by the claim's success. */
-    private fun claimFeeRepeat(context: android.content.Context, phase: Int) = when (phase) {
+    private fun claimAlreadyClaiming(context: android.content.Context, phase: Int) = when (phase) {
         1, 2 -> {
             val h = DeviceHarness(context, Hang.ENVELOPE_ALREADY_CLAIMING)
             if (phase == 1) {
@@ -228,6 +230,38 @@ class PendingTransferDeviceTest {
         2 -> {
             val h = DeviceHarness(context, Hang.NONE)
             resumeToDone(h, TEST_ADDRESS, expectSigns = 1, expectRecordCalls = 1)
+        }
+        else -> throw Failure("no phase $phase")
+    }
+
+    /** MEDIUM-1, downgrade path: submit names another txid and the job is cancelled; the record must still be rewritten without an id and keep blocking. */
+    private fun cancelDuringDowngrade(context: android.content.Context, phase: Int) = when (phase) {
+        1 -> {
+            val h = DeviceHarness(context, Hang.MISMATCH_AND_CANCEL)
+            h.resetWorld()
+            runStake(h, TEST_ADDRESS)
+            awaitReached(h)
+            Thread.sleep(1_000) // let the cancelled job unwind
+            val s = h.ledger.read()
+            check(s.submits == 1, "submits=${s.submits}")
+            // this process has the key blocked in memory, so read what is on disk, as the next process will
+            val onDisk = (SharedPrefsPendingTransferStore(h.prefs).find(TEST_ADDRESS, TransferKind.STAKE) as? PendingLookup.Found)?.record
+            check(onDisk != null && onDisk.state == TransferState.POSSIBLY_BROADCAST && onDisk.txId == null, "record on disk after the cancel: $onDisk")
+            check(h.store.find(TEST_ADDRESS, TransferKind.STAKE) == PendingLookup.Unreadable, "the key is not blocked in this process")
+            report(h, "cancelled during the downgrade, record rewritten without an id")
+        }
+        2 -> {
+            val h = DeviceHarness(context, Hang.NONE)
+            val vm = h.stakeVm(h.session(TEST_ADDRESS))
+            vm.start(h.key, DeviceHarness.REGISTRATION, byod = false)
+            await("blocked") { vm.uiState.value.state.let { it is StakeState.Failed || it is StakeState.Ready || it is StakeState.Done } }
+            val state = vm.uiState.value.state
+            check(state is StakeState.Failed && state.code == "TXN_PENDING", "expected TXN_PENDING, got $state")
+            val s = h.ledger.read()
+            check(s.submits == 1 && s.signs == 1, "submits=${s.submits} signs=${s.signs}: the blocked transfer was sent or built again")
+            val onDisk = record(h, TEST_ADDRESS)
+            check(onDisk != null && onDisk.state == TransferState.POSSIBLY_BROADCAST && onDisk.txId == null, "record after restart: $onDisk")
+            report(h, "still blocked after restart, nothing sent or built")
         }
         else -> throw Failure("no phase $phase")
     }

@@ -57,6 +57,9 @@ enum class Hang {
 
     /** Not a stop: the job that called submit is cancelled the moment submit has reached the chain and returns. */
     CANCEL_AFTER_SUBMIT,
+
+    /** Not a stop: submit reaches the chain but answers ANOTHER txid than the signed bytes give, and the calling job is cancelled as it returns. */
+    MISMATCH_AND_CANCEL,
 }
 
 /**
@@ -173,6 +176,7 @@ class DeviceHarness(val context: Context, val hang: Hang) {
                     """{"db-available":true,"is-migrating":false,"message":"$round","round":$round,"version":"3.10.0-ndly"}""".toResponseBody(json),
                 )
             }
+            if (url.contains("/v2/accounts/")) return Response.error(500, """{"message":"no account search in the device test"}""".toResponseBody(json))
             val txId = url.substringAfterLast('/')
             val at = state.chain[txId]
                 ?: return Response.error(404, """{"message":"no transaction found for transaction id: $txId"}""".toResponseBody(json))
@@ -214,6 +218,11 @@ class DeviceHarness(val context: Context, val hang: Hang) {
             if (hang == Hang.CANCEL_AFTER_SUBMIT) {
                 kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.cancel()
                 reached.complete(Unit)
+            }
+            if (hang == Hang.MISMATCH_AND_CANCEL) {
+                kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+                reached.complete(Unit)
+                return listOf("MISMATCHEDTX")
             }
             return listOf(txId)
         }
