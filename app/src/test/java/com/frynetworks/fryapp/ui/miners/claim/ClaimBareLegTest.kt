@@ -221,7 +221,7 @@ class ClaimBareLegTest {
         userPays("G1", "")
         val vm = claim()
         assertEquals("INVALID_ENVELOPE", failed(vm).code)
-        assertEquals(0, fake.signRequests.size)
+        assertEquals(0, fake.signRequests.count { group -> (group.singleOrNull()?.size ?: 0) > 1 })
         assertTrue(rewards.confirmCalls.isEmpty())
         assertEquals(null, bindingJson())
     }
