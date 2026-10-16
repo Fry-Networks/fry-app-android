@@ -41,4 +41,6 @@ data class ConfirmResultResponse(
     @SerializedName("success") val success: Boolean? = null,
     @SerializedName("txId") val txId: String? = null,
     @SerializedName("claimedAt") val claimedAt: String? = null,
+    @SerializedName("code") val code: String? = null,
+    @SerializedName("terminal") val terminal: Boolean? = null,
 )

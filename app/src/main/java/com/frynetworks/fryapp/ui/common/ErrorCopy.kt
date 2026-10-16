@@ -43,6 +43,11 @@ object ErrorCopy {
         "NO_STAKE_AMOUNT" to "This product has no stake amount configured for this action.",
         "NO_PRODUCT" to "This miner's product is not in the catalog, so it cannot be staked here.",
         "CONFIRM_PENDING" to "The claim was submitted but is still awaiting confirmation. Check the transaction on the explorer.",
+        "FEE_INVALID" to "The claim fee payment could not be accepted for this claim. Do not pay again: contact support so it can be checked.",
+        "FEE_REUSED" to "The claim fee payment was already used for another claim. Do not pay again: contact support so it can be checked.",
+        "FEE_IN_USE" to "The claim fee payment is being used by another claim in progress. Do not pay again: contact support so it can be checked.",
+        "FEE_REQUIRED" to "The claim fee payment was not recognised for this claim. Do not pay again: contact support so it can be checked.",
+        "FEE_UNVERIFIABLE" to "The claim fee payment could not be verified right now. Do not pay again: contact support so it can be checked.",
         "INVALID_ADDRESS" to "That is not a valid Algorand address.",
     )
 

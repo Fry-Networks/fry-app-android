@@ -57,3 +57,12 @@ interface RewardsRepository {
 
     suspend fun clearCache()
 }
+
+/**
+ * A [RewardsRepository] that can send the paid claim-fee txid with the envelope request. Kept apart from [RewardsRepository] so a
+ * wrapper that only knows the two-argument call (and delegates the rest) keeps its own `claimEnvelope` in charge.
+ */
+interface FeeAwareRewardsRepository : RewardsRepository {
+    /** `fee_tx_id` is sent only when [feeTxId] is not null; a preview never carries it. */
+    suspend fun claimEnvelope(minerKey: String, no: Int?, feeTxId: String?): ClaimEnvelopeResponse
+}

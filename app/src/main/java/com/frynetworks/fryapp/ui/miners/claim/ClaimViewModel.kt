@@ -6,7 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.frynetworks.fryapp.auth.SessionRepository
 import com.frynetworks.fryapp.auth.SessionState
 import com.frynetworks.fryapp.data.dashboard.model.ClaimEnvelopeResponse
+import com.frynetworks.fryapp.data.dashboard.model.ConfirmResultResponse
 import com.frynetworks.fryapp.data.dashboard.repo.AlgodRepository
+import com.frynetworks.fryapp.data.dashboard.repo.FeeAwareRewardsRepository
 import com.frynetworks.fryapp.data.dashboard.repo.MinerRepository
 import com.frynetworks.fryapp.data.dashboard.repo.RewardsRepository
 import com.frynetworks.fryapp.data.dashboard.repo.FailClosedTxResolver
@@ -578,7 +580,7 @@ class ClaimViewModel(
         dispatch(ClaimEvent.FeePaid(feeTxId))
 
         val envelope = try {
-            rewards.claimEnvelope(key, ui.value.no)
+            (rewards as? FeeAwareRewardsRepository)?.claimEnvelope(key, ui.value.no, feeTxId) ?: rewards.claimEnvelope(key, ui.value.no)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -673,6 +675,11 @@ class ClaimViewModel(
             if (result.ok == true || result.success == true) {
                 dispatch(ClaimEvent.Confirmed(result.txId ?: txId, TimeFormat.parseMillis(result.claimedAt)))
                 onDone(target)
+                return
+            }
+            if (isTerminalCustodial(result)) {
+                // The binding stays: the next attempt moves the same fee payment to a new envelope, once.
+                dispatch(ClaimEvent.ConfirmFailed(result.code ?: "CONFIRM_PENDING", TERMINAL_CLAIM_MESSAGE))
                 return
             }
             if (attempt < CUSTODIAL_POLL_ATTEMPTS - 1) delay(pollDelayMillis)
@@ -839,8 +846,15 @@ class ClaimViewModel(
         if (binding.mode == ClaimFeeBinding.UNTRACKED) return PriorFee.Blocked(UNKNOWN_FEE_MESSAGE)
         val claimId = binding.claimTxId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
         if (binding.mode == ClaimFeeBinding.CUSTODIAL) {
-            // The dashboard reports no terminal failure for a custodial claim, so it is never moved.
-            return if (custodialConfirmed(claimId)) removeSpent(target) else PriorFee.Blocked(PENDING_FEE_MESSAGE)
+            // Moved only when the dashboard itself calls the custodial claim terminally dead (once per record); anything else blocks.
+            return when (custodialOutcome(claimId)) {
+                ClaimOutcome.CONFIRMED -> removeSpent(target)
+                ClaimOutcome.ABSENT -> {
+                    val feeTxId = record.txId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
+                    if (binding.rebound) PriorFee.Blocked(UNKNOWN_FEE_MESSAGE) else PriorFee.Paid(feeTxId, binding, rebind = true)
+                }
+                ClaimOutcome.UNKNOWN -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
+            }
         }
         val feeTxId = record.txId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
         return when (claimOutcome(claimId, binding.claimLastValid)) {
@@ -850,12 +864,17 @@ class ClaimViewModel(
         }
     }
 
-    private suspend fun custodialConfirmed(claimId: String): Boolean {
+    /** Absent only when the dashboard answers `CLAIM_EXPIRED`/`CLAIM_FAILED` with `terminal: true` and the chain does not show the claim. */
+    private suspend fun custodialOutcome(claimId: String): ClaimOutcome {
         val polled = safely { rewards.claimConfirmCustodial(claimId) }
-        if (polled != null && (polled.ok == true || polled.success == true)) return true
+        if (polled != null && (polled.ok == true || polled.success == true)) return ClaimOutcome.CONFIRMED
         val answer = safely { resolver.resolve(claimId, null) }
-        return answer is TxResolution.Confirmed && answer.txId == claimId
+        if (answer is TxResolution.Confirmed && answer.txId == claimId) return ClaimOutcome.CONFIRMED
+        return if (polled != null && isTerminalCustodial(polled)) ClaimOutcome.ABSENT else ClaimOutcome.UNKNOWN
     }
+
+    private fun isTerminalCustodial(r: ConfirmResultResponse): Boolean =
+        r.terminal == true && (r.code == CODE_CLAIM_EXPIRED || r.code == CODE_CLAIM_FAILED)
 
     /** What became of the claim's user leg; Absent only with a known last valid round and the pool silent about it. */
     private suspend fun claimOutcome(claimId: String, lastValid: Long?): ClaimOutcome {
@@ -953,10 +972,14 @@ class ClaimViewModel(
 
     companion object {
         private const val CODE_TXN_PENDING = "TXN_PENDING"
+        private const val CODE_CLAIM_EXPIRED = "CLAIM_EXPIRED"
+        private const val CODE_CLAIM_FAILED = "CLAIM_FAILED"
         private const val CODE_RECORD_FAILED = "TXN_RECORD_FAILED"
         private const val PENDING_FEE_MESSAGE = "The claim fee payment may still be processing. Try again shortly."
         private const val UNKNOWN_FEE_MESSAGE =
             "A previous claim fee payment may have been sent and is still pending. Do not try again: contact support so it can be checked."
+        private const val TERMINAL_CLAIM_MESSAGE =
+            "The claim did not complete. Try again: the claim fee payment already made is reused, so you will not pay again."
         private const val LOG_TAG = "ClaimViewModel"
         private const val CLEAR_ATTEMPTS = 3
         private const val OPTIN_MINER = "-"

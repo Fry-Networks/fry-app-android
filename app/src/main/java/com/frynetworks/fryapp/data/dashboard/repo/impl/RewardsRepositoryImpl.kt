@@ -18,7 +18,7 @@ import com.frynetworks.fryapp.data.dashboard.model.DashboardGson
 import com.frynetworks.fryapp.data.dashboard.model.PriceResponse
 import com.frynetworks.fryapp.data.dashboard.model.RewardSummary
 import com.frynetworks.fryapp.data.dashboard.model.RewardsPageResponse
-import com.frynetworks.fryapp.data.dashboard.repo.RewardsRepository
+import com.frynetworks.fryapp.data.dashboard.repo.FeeAwareRewardsRepository
 import com.frynetworks.fryapp.network.dashboard.DashboardException
 import com.frynetworks.fryapp.network.dashboard.JsonBody
 import com.frynetworks.fryapp.network.dashboard.SessionEventBus
@@ -51,7 +51,7 @@ class RewardsRepositoryImpl(
     private val now: () -> Long = System::currentTimeMillis,
     /** Receives `serverTime` (epoch millis) from responses that carry it, e.g. to feed `ServerClock`. */
     private val onServerTime: (Long) -> Unit = {},
-) : RewardsRepository {
+) : FeeAwareRewardsRepository {
 
     private val calls = DashboardCalls(bus, gson)
 
@@ -146,6 +146,13 @@ class RewardsRepositoryImpl(
     override suspend fun claimEnvelope(minerKey: String, no: Int?): ClaimEnvelopeResponse {
         requireAddress()
         return calls.call(ClaimEnvelopeResponse::class.java) { api.claim(claimBody(minerKey, no).toJsonRequestBody()) }
+    }
+
+    override suspend fun claimEnvelope(minerKey: String, no: Int?, feeTxId: String?): ClaimEnvelopeResponse {
+        requireAddress()
+        return calls.call(ClaimEnvelopeResponse::class.java) {
+            api.claim(claimBody(minerKey, no).apply { if (feeTxId != null) "fee_tx_id" to feeTxId }.toJsonRequestBody())
+        }
     }
 
     override suspend fun claimConfirm(groupId: String, signedUserLegB64: String): ConfirmResultResponse {

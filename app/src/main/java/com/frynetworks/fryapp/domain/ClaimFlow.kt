@@ -10,6 +10,7 @@ private const val CODE_USER_REJECTED = "USER_REJECTED"
 private const val CODE_INSUFFICIENT_ALGO = "INSUFFICIENT_ALGO"
 private const val CODE_REWARD_ALREADY_CLAIMING = "REWARD_ALREADY_CLAIMING"
 private const val CODE_CLAIM_GROUP_EXPIRED = "CLAIM_GROUP_EXPIRED"
+private val FEE_REJECTION_CODES = setOf("FEE_INVALID", "FEE_REUSED", "FEE_IN_USE", "FEE_REQUIRED", "FEE_UNVERIFIABLE")
 private const val MODE_USER_PAYS = "user_pays"
 
 /**
@@ -175,7 +176,7 @@ fun reduce(state: ClaimState, event: ClaimEvent): ClaimState {
             is ClaimEvent.EnvelopeFailed -> ClaimState.Failed(
                 event.code,
                 event.message,
-                recoverable = event.code != CODE_REWARD_ALREADY_CLAIMING,
+                recoverable = event.code != CODE_REWARD_ALREADY_CLAIMING && event.code !in FEE_REJECTION_CODES,
             )
             else -> state
         }
