@@ -4,6 +4,7 @@ import com.frynetworks.fryapp.data.dashboard.api.AlgodApi
 import com.frynetworks.fryapp.data.dashboard.api.DashboardCalls
 import com.frynetworks.fryapp.data.dashboard.api.DashboardErrorCodes
 import com.frynetworks.fryapp.data.dashboard.repo.AlgodRepository
+import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
 import com.frynetworks.fryapp.network.dashboard.DashboardException
 import com.google.gson.JsonElement
 import com.google.gson.JsonNull
@@ -58,6 +59,30 @@ class AlgodRepositoryImpl(private val api: AlgodApi) : AlgodRepository {
             current++
         }
         throw DashboardException(DashboardErrorCodes.TXN_NOT_CONFIRMED, "Transaction $txId was not confirmed within $rounds rounds")
+    }
+
+    /**
+     * Pool lookup only: this node API has no chain history, so a 404 or any error is [TxStatus.Unknown], never
+     * [TxStatus.Absent]. A stake therefore cannot be rebuilt on the strength of this implementation.
+     */
+    override suspend fun txStatus(txId: String): TxStatus {
+        val (status, pending) = try {
+            get { api.pendingTransaction(txId, "json") }
+        } catch (e: DashboardException) {
+            return TxStatus.Unknown
+        }
+        if (status == 404) return TxStatus.Unknown
+        val obj = DashboardCalls.objectOrNull(pending) ?: return TxStatus.Unknown
+        val confirmedRound = DashboardCalls.longOrNull(obj, "confirmed-round") ?: 0L
+        if (confirmedRound > 0L) return TxStatus.Confirmed(confirmedRound)
+        val poolError = DashboardCalls.stringOrNull(obj, "pool-error")
+        return if (poolError.isNullOrBlank()) TxStatus.InPool else TxStatus.Rejected(poolError)
+    }
+
+    override suspend fun currentRound(): Long? = try {
+        DashboardCalls.longOrNull(DashboardCalls.objectOrNull(get { api.status() }.second), "last-round")
+    } catch (e: DashboardException) {
+        null
     }
 
     /** `/v2/accounts/{addr}?exclude=all`; null for a 404 (address never funded). */

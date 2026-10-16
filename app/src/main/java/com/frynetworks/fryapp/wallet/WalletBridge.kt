@@ -27,6 +27,8 @@ data class TxnSummary(
     val assetId: Long?,
     val note: String?,
     val txId: String?,
+    /** Last round the transaction is valid for, when the bridge reports it. */
+    val lastValid: Long? = null,
 )
 
 enum class BridgeErrorCode {

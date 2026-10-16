@@ -78,6 +78,8 @@ sealed interface StakeState {
         val message: String,
         val recoverable: Boolean,
         val retryAfterSeconds: Int? = null,
+        /** The stake transfer's transaction id once it may have reached the network; retry resumes from it instead of sending again. */
+        val txId: String? = null,
     ) : StakeState
 }
 
@@ -100,12 +102,12 @@ sealed interface StakeEvent {
     data class PrecheckFailed(val code: String, val message: String, val retryAfterSeconds: Int? = null) : StakeEvent
     data object SignRejected : StakeEvent
     data class Submitted(val txId: String) : StakeEvent
-    data class SubmitFailed(val code: String, val message: String) : StakeEvent
+    data class SubmitFailed(val code: String, val message: String, val txId: String? = null) : StakeEvent
     data object TxnConfirmed : StakeEvent
     data object Verified : StakeEvent
-    data class VerifyFailed(val code: String, val message: String) : StakeEvent
+    data class VerifyFailed(val code: String, val message: String, val txId: String? = null) : StakeEvent
     data class Recorded(val txId: String, val waived: Boolean = false) : StakeEvent
-    data class RecordFailed(val code: String, val message: String) : StakeEvent
+    data class RecordFailed(val code: String, val message: String, val txId: String? = null) : StakeEvent
     data object Cancel : StakeEvent
 }
 
@@ -116,7 +118,7 @@ fun reduce(state: StakeState, event: StakeEvent): StakeState {
         return if (state is StakeState.Done || state is StakeState.Failed) {
             state
         } else {
-            StakeState.Failed(CODE_CANCELLED, "Cancelled by user.", recoverable = true)
+            StakeState.Failed(CODE_CANCELLED, "Cancelled by user.", recoverable = true, txId = (state as? StakeState.Submitting)?.txId)
         }
     }
 
@@ -171,25 +173,25 @@ fun reduce(state: StakeState, event: StakeEvent): StakeState {
             is StakeEvent.Submitted -> StakeState.Submitting(event.txId)
             is StakeEvent.SignRejected ->
                 StakeState.Failed(CODE_USER_REJECTED, "Stake transaction was not signed.", recoverable = true)
-            is StakeEvent.SubmitFailed -> StakeState.Failed(event.code, event.message, recoverable = true)
+            is StakeEvent.SubmitFailed -> StakeState.Failed(event.code, event.message, recoverable = true, txId = event.txId)
             else -> state
         }
 
         is StakeState.Submitting -> when (event) {
             is StakeEvent.TxnConfirmed -> StakeState.Verifying
-            is StakeEvent.SubmitFailed -> StakeState.Failed(event.code, event.message, recoverable = true)
+            is StakeEvent.SubmitFailed -> StakeState.Failed(event.code, event.message, recoverable = true, txId = state.txId)
             else -> state
         }
 
         is StakeState.Verifying -> when (event) {
             is StakeEvent.Verified -> StakeState.Recording
-            is StakeEvent.VerifyFailed -> StakeState.Failed(event.code, event.message, recoverable = true)
+            is StakeEvent.VerifyFailed -> StakeState.Failed(event.code, event.message, recoverable = true, txId = event.txId)
             else -> state
         }
 
         is StakeState.Recording -> when (event) {
             is StakeEvent.Recorded -> StakeState.Done(event.txId, event.waived)
-            is StakeEvent.RecordFailed -> StakeState.Failed(event.code, event.message, recoverable = true)
+            is StakeEvent.RecordFailed -> StakeState.Failed(event.code, event.message, recoverable = true, txId = event.txId)
             else -> state
         }
 

@@ -11,6 +11,7 @@ import com.frynetworks.fryapp.data.dashboard.repo.MinerRepository
 import com.frynetworks.fryapp.data.dashboard.repo.RewardsRepository
 import com.frynetworks.fryapp.data.dashboard.repo.StakeRepository
 import com.frynetworks.fryapp.data.dashboard.repo.StakeSubmitPayload
+import com.frynetworks.fryapp.data.dashboard.repo.TxStatus
 import com.frynetworks.fryapp.domain.FryAsset
 import com.frynetworks.fryapp.domain.MinerFamily
 import com.frynetworks.fryapp.domain.StakeContext
@@ -48,6 +49,19 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
+
+private data class PendingBroadcast(
+    val txId: String,
+    val minerKey: String,
+    val context: StakeContext,
+    val address: String,
+    val plan: StakeState.Ready,
+    /** Upper bound of the last round the transfer can still land in; null = unknown, which never allows a rebuild. */
+    val lastValid: Long?,
+)
+
+private const val CODE_TXN_PENDING = "TXN_PENDING"
+private const val MAX_TXN_LIFE = 1_000L
 
 /** Rows of the sheet's stage list (`stake_stage_<n>`, 1-based). */
 enum class StakeStage(val label: String) {
@@ -154,6 +168,9 @@ class StakeViewModel(
     val uiState: StateFlow<StakeUiState> = ui.asStateFlow()
     private var job: Job? = null
 
+    /** The stake transfer that may be on the network and is not recorded yet; survives [start], cleared on Done or when proven dead. */
+    private var pendingBroadcast: PendingBroadcast? = null
+
     init {
         viewModelScope.launch {
             bridge.events.collect { event ->
@@ -219,6 +236,12 @@ class StakeViewModel(
     }
 
     fun retry() {
+        val pending = pendingBroadcast
+        if (pending != null && pending.minerKey == ui.value.minerKey && pending.context == ui.value.context) {
+            job?.cancel()
+            job = viewModelScope.launch { holdingInstalls { if (resume(pending) == Resumed.REBUILD) restartFresh() } }
+            return
+        }
         val key = ui.value.minerKey ?: return
         val context = ui.value.context ?: return
         start(key, context, ui.value.byod)
@@ -363,6 +386,11 @@ class StakeViewModel(
             return
         }
 
+        // A transfer for this stake may already be on the network: continue it, never send a second one.
+        pendingBroadcast?.takeIf { it.minerKey == key && it.context == context && it.address == address }?.let {
+            if (resume(it) == Resumed.HANDLED) return
+        }
+
         try {
             stakes.precheck(key, address, context)
         } catch (e: CancellationException) {
@@ -393,57 +421,144 @@ class StakeViewModel(
         )
         notePayload["timestamp"] = isoTimestamp(clock.nowMillis())
         val note = JsJson.stringify(notePayload)
+        var broadcast: PendingBroadcast? = null
         val txId = try {
             val txn = bridge.buildAssetTransfer(address, StakeRepository.STAKE_WALLET, plan.asset.id, amountMicro, note)
+            val builtRound = safely { algod.currentRound() }
+            val summary = safely { bridge.decodeTxn(txn) }
             val signed = signSingle(txn)
+            // From here the transfer can reach the network whatever submit reports back, so its id (the hash of the
+            // built transaction) is recorded first: every failure from submit onward resumes from it, never rebuilds.
+            summary?.txId?.let {
+                broadcast = PendingBroadcast(it, key, context, address, plan, lastValidBound(summary.lastValid, builtRound))
+                pendingBroadcast = broadcast
+            }
             bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()
                 ?: throw BridgeException(BridgeErrorCode.UNKNOWN, "The bridge returned no transaction id")
         } catch (e: CancellationException) {
             throw e
         } catch (e: BridgeException) {
             clearSummary()
-            if (e.code == BridgeErrorCode.USER_REJECTED) dispatch(StakeEvent.SignRejected) else dispatch(StakeEvent.SubmitFailed(e.code.name, e.message ?: ""))
+            if (e.code == BridgeErrorCode.USER_REJECTED && broadcast == null) {
+                dispatch(StakeEvent.SignRejected)
+            } else {
+                dispatch(StakeEvent.SubmitFailed(e.code.name, e.message ?: "", broadcast?.txId))
+            }
             return
         } catch (e: Exception) {
             clearSummary()
-            dispatch(StakeEvent.SubmitFailed(e.errorCode(), e.message ?: ""))
+            dispatch(StakeEvent.SubmitFailed(e.errorCode(), e.message ?: "", broadcast?.txId))
             return
         }
+        val sent = (broadcast ?: PendingBroadcast(txId, key, context, address, plan, null)).copy(txId = txId)
+        pendingBroadcast = sent
         dispatch(StakeEvent.Submitted(txId))
+        afterBroadcast(sent, alreadyConfirmed = false)
+    }
 
-        try {
-            algod.waitConfirmed(txId, WAIT_ROUNDS)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            dispatch(StakeEvent.SubmitFailed(e.errorCode(), e.message ?: ""))
-            return
+    /** Waits for confirmation (unless known), verifies with the dashboard and records the stake; every failure carries the txId. */
+    private suspend fun afterBroadcast(sent: PendingBroadcast, alreadyConfirmed: Boolean) {
+        val txId = sent.txId
+        if (!alreadyConfirmed) {
+            try {
+                algod.waitConfirmed(txId, WAIT_ROUNDS)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                dispatch(StakeEvent.SubmitFailed(e.errorCode(), e.message ?: "", txId))
+                return
+            }
         }
         dispatch(StakeEvent.TxnConfirmed)
 
         try {
-            stakes.verifyTxn(address, txId)
+            stakes.verifyTxn(sent.address, txId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            dispatch(StakeEvent.VerifyFailed(e.errorCode(), e.message ?: ""))
+            dispatch(StakeEvent.VerifyFailed(e.errorCode(), e.message ?: "", txId))
             return
         }
         dispatch(StakeEvent.Verified)
 
         try {
             val result = stakes.submit(
-                context,
-                StakeSubmitPayload(address = address, minerKey = key, txId = txId, amount = plan.amount, assetId = plan.asset.id),
+                sent.context,
+                StakeSubmitPayload(address = sent.address, minerKey = sent.minerKey, txId = txId, amount = sent.plan.amount, assetId = sent.plan.asset.id),
             )
             dispatch(StakeEvent.Recorded(result.txId ?: txId, result.waived))
-            runCatching { miners.refreshDetail(key) }
+            pendingBroadcast = null
+            runCatching { miners.refreshDetail(sent.minerKey) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            dispatch(StakeEvent.RecordFailed(e.errorCode(), e.message ?: ""))
+            dispatch(StakeEvent.RecordFailed(e.errorCode(), e.message ?: "", txId))
         }
     }
+
+    private enum class Resumed { HANDLED, REBUILD }
+
+    /**
+     * Continues a stake whose transfer may already be on the network, from its transaction id. A new transfer is
+     * allowed ([Resumed.REBUILD]) only when the transaction is provably dead: reported absent AND past its last valid round.
+     * Anything unknown keeps the failure, with the txId, and builds nothing.
+     */
+    private suspend fun resume(sent: PendingBroadcast): Resumed {
+        when (safely { algod.txStatus(sent.txId) } ?: TxStatus.Unknown) {
+            is TxStatus.Confirmed -> {
+                showSubmitting(sent)
+                afterBroadcast(sent, alreadyConfirmed = true)
+            }
+            TxStatus.InPool -> {
+                showSubmitting(sent)
+                afterBroadcast(sent, alreadyConfirmed = false)
+            }
+            TxStatus.Absent -> {
+                val round = safely { algod.currentRound() }
+                val lastValid = sent.lastValid
+                if (round != null && lastValid != null && round > lastValid) {
+                    pendingBroadcast = null
+                    return Resumed.REBUILD
+                }
+                stillPending(sent)
+            }
+            is TxStatus.Rejected, TxStatus.Unknown -> stillPending(sent)
+        }
+        return Resumed.HANDLED
+    }
+
+    private fun showSubmitting(sent: PendingBroadcast) = ui.update {
+        it.copy(state = StakeState.Submitting(sent.txId), plan = sent.plan, loading = false, failedStage = null, pendingSummary = null)
+    }
+
+    private fun stillPending(sent: PendingBroadcast) = ui.update {
+        it.copy(
+            state = StakeState.Failed(CODE_TXN_PENDING, "The stake transaction may still be processed. Try again shortly.", recoverable = true, txId = sent.txId),
+            loading = false,
+            failedStage = StakeStage.SUBMIT.ordinal,
+            pendingSummary = null,
+        )
+    }
+
+    /** After a provably dead transfer: the usual start-up, ending on a fresh amount step the user confirms again. */
+    private suspend fun restartFresh() {
+        val key = ui.value.minerKey ?: return
+        val context = ui.value.context ?: return
+        ui.value = StakeUiState(minerKey = key, context = context, byod = ui.value.byod, loading = true, lastWalletUri = ui.value.lastWalletUri)
+        if (ensureConnected(reconnectOnly = true)) loadAmount()
+    }
+
+    private suspend fun <T> safely(block: suspend () -> T): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /** The earlier of the bridge's last valid round and the build round plus the 1000-round maximum validity (plus the first-round slack). */
+    private fun lastValidBound(reported: Long?, builtRound: Long?): Long? =
+        listOfNotNull(reported, builtRound?.plus(MAX_TXN_LIFE + 1)).minOrNull()
 
     private suspend fun signSingle(txnB64: String): String {
         val summary = runCatching { bridge.decodeTxn(txnB64) }.getOrNull()
