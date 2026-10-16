@@ -599,13 +599,14 @@ class ClaimViewModel(
             is ClaimState.AwaitingSignature -> {
                 // The fee is tied to this claim on disk before anything is signed.
                 val binding = userPaysBinding(envelope, priorBinding, rebind)
-                if (envelope.unsignedUserLeg.isNullOrBlank() || binding.claimTxId == null) {
-                    // Nothing can be tied to this claim, so nothing is signed: the fee stays this claim's own.
+                if (envelope.unsignedUserLeg.isNullOrBlank()) {
+                    // No leg to sign: nothing is signed or bound, and the fee stays this claim's own.
                     unbind(target)
                     failDirect("INVALID_ENVELOPE", ErrorCopy.forCode("INVALID_ENVELOPE"))
                     return
                 }
-                if (!bindClaim(target, binding)) return
+                // A binding without the claim's id could never be resolved, so none is written (the claim then behaves as an unbound fee).
+                if (binding.claimTxId != null && !bindClaim(target, binding)) return
                 signGroup(state.groupId, envelope, target)
             }
             ClaimState.Confirming -> {

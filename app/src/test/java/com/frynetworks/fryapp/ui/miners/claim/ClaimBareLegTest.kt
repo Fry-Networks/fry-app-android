@@ -204,13 +204,13 @@ class ClaimBareLegTest {
     }
 
     @Test
-    fun `a leg whose id cannot be computed fails before signing and persists no binding`() = runTest {
+    fun `a leg whose id cannot be computed is never bound, so no unresolvable binding persists`() = runTest {
         userPays("G1", "not-a-transaction")
-        val vm = claim()
-        assertEquals("INVALID_ENVELOPE", failed(vm).code)
-        assertEquals(0, fake.signRequests.count { group -> (group.singleOrNull()?.size ?: 0) > 1 })
-        assertTrue(rewards.confirmCalls.isEmpty())
+        rewards.confirmError = IOException("connection reset")
+        claim()
+        assertEquals(1, pays())
         assertEquals(null, bindingJson())
+        rewards.confirmError = null
         userPays("G2", bare(leg2))
         assertTrue(claim().uiState.value.state is ClaimState.Done)
         assertEquals("the paid fee was reused", 1, pays())
