@@ -1,5 +1,6 @@
 package com.frynetworks.fryapp.ui.miners.claim
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.frynetworks.fryapp.auth.SessionRepository
@@ -41,6 +42,8 @@ import com.frynetworks.fryapp.wallet.WalletVendor
 import com.frynetworks.fryapp.wallet.bridge.ExternalUriLauncher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,6 +51,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 import javax.inject.Inject
 
@@ -148,6 +152,8 @@ class ClaimViewModel(
     private val store: PendingTransferStore = InMemoryPendingTransferStore(),
     /** What became of a recorded fee payment; the default can never say it is gone, so the fee is never paid twice. */
     private val resolver: TxResolver = FailClosedTxResolver,
+    /** Where the store (disk) is touched; production passes IO, the default runs inline. */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
 ) : ViewModel() {
 
     @Inject
@@ -164,7 +170,7 @@ class ClaimViewModel(
         resolver: TxResolver,
     ) : this(
         rewards, algod, miners, bridge, session, clock,
-        openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor, store = store, resolver = resolver,
+        openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor, store = store, resolver = resolver, ioDispatcher = Dispatchers.IO,
     )
 
     private val ui = MutableStateFlow(ClaimUiState())
@@ -366,6 +372,7 @@ class ClaimViewModel(
 
         // A fee payment recorded for this claim (before a crash, a retry, a logout, an update) is continued, never paid again.
         val row = rowCode()
+        val target = FeeTarget(address, key, row)
         var feeTxId: String? = null
         when (val prior = priorFee(address, key, row)) {
             PriorFee.None -> Unit
@@ -386,7 +393,7 @@ class ClaimViewModel(
                 // transaction used for the id (with no last valid round, so it never allows a second payment); with neither the
                 // record is POSSIBLY_BROADCAST and always blocks.
                 val parsed = SignedTxnReader.parse(signed)
-                val knownId = parsed?.txId ?: summary?.txId
+                val knownId = parsed?.txId ?: summary?.txId?.takeIf { it.isNotBlank() }
                 val toSend = PendingTransfer(
                     kind = TransferKind.CLAIM_FEE,
                     sender = address,
@@ -404,12 +411,14 @@ class ClaimViewModel(
                     createdAt = clock.nowMillis(),
                 )
                 // On disk before the network can see it: a record that cannot be written means nothing is sent.
-                if (!store.put(toSend)) throw RecordNotSaved()
+                if (!io { store.putNew(toSend) }) throw RecordNotSaved()
                 recorded = toSend
-                val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()
+                val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()?.takeIf { it.isNotBlank() }
                     ?: throw BridgeException(BridgeErrorCode.UNKNOWN, "The bridge returned no transaction id")
                 if (knownId != null && returned != knownId) throw TxIdMismatch()
-                if (knownId == null) store.put(toSend.copy(txId = returned, state = TransferState.PRE_SUBMIT))
+                if (knownId == null && !io { store.put(toSend.copy(txId = returned, state = TransferState.PRE_SUBMIT)) }) {
+                    Log.w(LOG_TAG, "could not record the id of a submitted claim fee payment") // the record stays unidentified and blocks
+                }
                 feeTxId = returned
             } catch (e: CancellationException) {
                 throw e
@@ -419,7 +428,7 @@ class ClaimViewModel(
                 return
             } catch (e: TxIdMismatch) {
                 // Neither id can be trusted: keep the record, without an id, so only the account search can resolve it.
-                recorded?.let { store.put(it.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)) }
+                recorded?.let { downgradeToUnidentified(it) }
                 failDirect(CODE_TXN_PENDING, UNKNOWN_FEE_MESSAGE)
                 return
             } catch (e: BridgeException) {
@@ -448,6 +457,7 @@ class ClaimViewModel(
             throw e
         } catch (e: Exception) {
             dispatch(ClaimEvent.EnvelopeFailed(e.errorCode(), e.message ?: ""))
+            endAttemptIfSpent(target, e.errorCode())
             return
         }
         dispatch(
@@ -461,13 +471,13 @@ class ClaimViewModel(
             ),
         )
         when (val state = ui.value.state) {
-            is ClaimState.AwaitingSignature -> signGroup(state.groupId, envelope)
-            ClaimState.Confirming -> pollCustodial(envelope.txId ?: return)
+            is ClaimState.AwaitingSignature -> signGroup(state.groupId, envelope, target)
+            ClaimState.Confirming -> pollCustodial(envelope.txId ?: return, target)
             else -> return
         }
     }
 
-    private suspend fun signGroup(groupId: String, envelope: ClaimEnvelopeResponse) {
+    private suspend fun signGroup(groupId: String, envelope: ClaimEnvelopeResponse, target: FeeTarget) {
         val userLeg = envelope.unsignedUserLeg
         if (userLeg.isNullOrBlank()) {
             failDirect("INVALID_ENVELOPE", ErrorCopy.forCode("INVALID_ENVELOPE"))
@@ -496,16 +506,17 @@ class ClaimViewModel(
         try {
             val result = rewards.claimConfirm(groupId, signed)
             dispatch(ClaimEvent.Confirmed(result.txId ?: "", TimeFormat.parseMillis(result.claimedAt)))
-            onDone()
+            onDone(target)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             dispatch(ClaimEvent.ConfirmFailed(e.errorCode(), e.message ?: ""))
+            endAttemptIfSpent(target, e.errorCode())
         }
     }
 
     /** Custodial path: poll `confirm {txId}` up to six times (Claim.tsx:539-598 parity). */
-    private suspend fun pollCustodial(txId: String) {
+    private suspend fun pollCustodial(txId: String, target: FeeTarget) {
         repeat(CUSTODIAL_POLL_ATTEMPTS) { attempt ->
             val result = try {
                 rewards.claimConfirmCustodial(txId)
@@ -513,11 +524,12 @@ class ClaimViewModel(
                 throw e
             } catch (e: Exception) {
                 dispatch(ClaimEvent.ConfirmFailed(e.errorCode(), e.message ?: ""))
+                endAttemptIfSpent(target, e.errorCode())
                 return
             }
             if (result.ok == true || result.success == true) {
                 dispatch(ClaimEvent.Confirmed(result.txId ?: txId, TimeFormat.parseMillis(result.claimedAt)))
-                onDone()
+                onDone(target)
                 return
             }
             if (attempt < CUSTODIAL_POLL_ATTEMPTS - 1) delay(pollDelayMillis)
@@ -525,15 +537,46 @@ class ClaimViewModel(
         dispatch(ClaimEvent.ConfirmFailed("CONFIRM_PENDING", "${ErrorCopy.forCode("CONFIRM_PENDING")} Transaction: $txId"))
     }
 
-    private suspend fun onDone() {
-        val key = ui.value.minerKey ?: return
-        // The claim is complete: this fee payment is spent (a failed clear is retried once).
-        address()?.let { sender ->
-            if (!store.remove(sender, TransferKind.CLAIM_FEE, key, rowCode())) store.remove(sender, TransferKind.CLAIM_FEE, key, rowCode())
-        }
-        runCatching { rewards.refreshSummary(key) }
-        runCatching { miners.refreshDetail(key) }
+    /** The claim is complete: this fee payment is spent. The sender, miner and row are those captured when the claim started. */
+    private suspend fun onDone(target: FeeTarget) {
+        clearFee(target)
+        runCatching { rewards.refreshSummary(target.key) }
+        runCatching { miners.refreshDetail(target.key) }
     }
+
+    /**
+     * A permanent failure ends this claim attempt: its fee is spent, so the next attempt pays a new one. Only a payment known to be
+     * confirmed is cleared; one that might still be in flight (unknown or still in the pool) is never touched.
+     */
+    private suspend fun endAttemptIfSpent(target: FeeTarget, code: String) {
+        if (code !in SPENT_CODES) return
+        val record = (io { store.get(target.sender, TransferKind.CLAIM_FEE, target.key, target.row) } as? PendingLookup.Found)?.record ?: return
+        val txId = record.txId ?: return
+        val confirmed = safely { algod.txStatus(txId) } is TxStatus.Confirmed || verdict(record, txId) is TxResolution.Confirmed
+        if (confirmed) clearFee(target)
+    }
+
+    /** Up to three tries; a failure is logged and the record stays (it can only make a later claim reuse a paid fee). */
+    private suspend fun clearFee(target: FeeTarget): Boolean {
+        repeat(CLEAR_ATTEMPTS) {
+            if (io { store.remove(target.sender, TransferKind.CLAIM_FEE, target.key, target.row) }) return true
+        }
+        Log.w(LOG_TAG, "could not clear the claim fee record after $CLEAR_ATTEMPTS tries")
+        return false
+    }
+
+    /** The fee payment's rewrite after a txid mismatch (retried once) or, failing that, a block for this process. */
+    private suspend fun downgradeToUnidentified(record: PendingTransfer) {
+        val unidentified = record.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)
+        if (io { store.put(unidentified) } || io { store.put(unidentified) }) return
+        Log.e(LOG_TAG, "could not rewrite a pending claim fee record after a txid mismatch: blocked for this process")
+        io { store.blockPermanently(record.sender, record.kind, record.minerKey, record.row) }
+    }
+
+    private suspend fun <T> io(block: () -> T): T = withContext(ioDispatcher) { block() }
+
+    /** Who a claim attempt pays for, captured when it starts so a logout or account switch cannot redirect its clean-up. */
+    private data class FeeTarget(val sender: String, val key: String, val row: String)
 
     private suspend fun signSingle(txnB64: String): String {
         showSummary(txnB64)
@@ -563,7 +606,7 @@ class ClaimViewModel(
     }
 
     private suspend fun priorFee(address: String, key: String, row: String): PriorFee {
-        val record = when (val found = store.get(address, TransferKind.CLAIM_FEE, key, row)) {
+        val record = when (val found = io { store.get(address, TransferKind.CLAIM_FEE, key, row) }) {
             PendingLookup.None -> return PriorFee.None
             PendingLookup.Unreadable -> return PriorFee.Blocked(UNKNOWN_FEE_MESSAGE)
             is PendingLookup.Found -> found.record
@@ -571,10 +614,10 @@ class ClaimViewModel(
         val txId = record.txId ?: return unidentifiedFee(record)
         val pool = safely { algod.txStatus(txId) } ?: TxStatus.Unknown
         return when (pool) {
-            is TxStatus.Confirmed -> PriorFee.Paid(txId)
+            is TxStatus.Confirmed -> paidOrStale(record, txId)
             TxStatus.InPool -> try {
                 algod.waitConfirmed(txId, WAIT_ROUNDS)
-                PriorFee.Paid(txId)
+                paidOrStale(record, txId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -582,13 +625,21 @@ class ClaimViewModel(
             }
             is TxStatus.Rejected -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
             TxStatus.Absent, TxStatus.Unknown -> when (verdict(record, txId)) {
-                is TxResolution.Confirmed -> PriorFee.Paid(txId)
+                is TxResolution.Confirmed -> paidOrStale(record, txId)
                 // Proven dead: the record goes, and only if it really went may the fee be paid again.
-                TxResolution.Absent ->
-                    if (store.remove(address, TransferKind.CLAIM_FEE, key, row)) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
+                TxResolution.Absent -> if (clearFee(FeeTarget(address, key, row))) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
                 TxResolution.Unknown -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
             }
         }
+    }
+
+    /**
+     * A payment known to be confirmed belongs to one claim attempt: older than [FEE_RECORD_WINDOW_MILLIS] it is stale, cleared, and the
+     * new attempt pays its own fee. Only ever called for a confirmed payment, never for one that might still be in flight.
+     */
+    private suspend fun paidOrStale(record: PendingTransfer, txId: String): PriorFee {
+        if (clock.nowMillis() - record.createdAt <= FEE_RECORD_WINDOW_MILLIS) return PriorFee.Paid(txId)
+        return if (clearFee(FeeTarget(record.sender, record.minerKey, record.row))) PriorFee.None else PriorFee.Blocked(PENDING_FEE_MESSAGE)
     }
 
     /** The resolver's answer, with Absent refused when the last valid round is unknown and anything about another txid ignored. */
@@ -607,8 +658,9 @@ class ClaimViewModel(
             resolver.findTransfer(record.sender, record.receiver, record.assetId, record.amountMicro, record.firstValid ?: record.builtRound)
         }
         if (found !is TxResolution.Confirmed) return PriorFee.Blocked(UNKNOWN_FEE_MESSAGE)
-        store.put(record.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)) // if this fails the unidentified record stays and still blocks
-        return PriorFee.Paid(found.txId)
+        val identified = record.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)
+        if (!io { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending claim fee payment") // the unidentified record stays and blocks
+        return paidOrStale(identified, found.txId)
     }
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try {
@@ -651,7 +703,20 @@ class ClaimViewModel(
         private const val CODE_TXN_PENDING = "TXN_PENDING"
         private const val CODE_RECORD_FAILED = "TXN_RECORD_FAILED"
         private const val PENDING_FEE_MESSAGE = "The claim fee payment may still be processing. Try again shortly."
-        private const val UNKNOWN_FEE_MESSAGE = "A previous claim fee payment may have been sent. Check your wallet before trying again."
+        private const val UNKNOWN_FEE_MESSAGE =
+            "A previous claim fee payment may have been sent and is still pending. Do not try again: contact support so it can be checked."
+        private const val LOG_TAG = "ClaimViewModel"
+        private const val CLEAR_ATTEMPTS = 3
+
+        /**
+         * A confirmed fee is bound to one claim attempt. Older than this and unused it is stale. The claim group itself lives
+         * [CLAIM_GROUP_TTL_MILLIS] (5 min, set on every envelope above); the fee-to-envelope-to-signature path includes a wallet
+         * wait, so the window is six times that: 30 minutes.
+         */
+        const val FEE_RECORD_WINDOW_MILLIS = 30 * 60_000L
+
+        /** Dashboard failures that end a claim attempt for good: another claim is in progress, nothing to claim, the group expired. */
+        private val SPENT_CODES = setOf("REWARD_ALREADY_CLAIMING", "NO_REWARDS", "CLAIM_GROUP_EXPIRED")
         private const val RECORD_FAILED_MESSAGE = "The claim could not be prepared safely on this phone, so nothing was paid. Try again."
         const val CLAIM_GROUP_TTL_MILLIS = 300_000L
         const val CUSTODIAL_POLL_ATTEMPTS = 6

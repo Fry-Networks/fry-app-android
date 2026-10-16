@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.frynetworks.fryapp.auth.SessionRepository
 import com.frynetworks.fryapp.auth.SessionState
+import android.util.Log
 import com.frynetworks.fryapp.data.dashboard.model.Product
 import com.frynetworks.fryapp.data.dashboard.repo.AlgodRepository
 import com.frynetworks.fryapp.data.dashboard.repo.MinerListItem
@@ -47,12 +48,15 @@ import com.frynetworks.fryapp.wallet.WalletVendor
 import com.frynetworks.fryapp.wallet.bridge.ExternalUriLauncher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -83,7 +87,10 @@ private sealed interface Pending {
 
 private const val CODE_TXN_PENDING = "TXN_PENDING"
 private const val CODE_RECORD_FAILED = "TXN_RECORD_FAILED"
-private const val UNKNOWN_BROADCAST_MESSAGE = "A previous stake transfer may have been sent. Check your wallet before trying again."
+private const val UNKNOWN_BROADCAST_MESSAGE =
+    "A previous stake transfer may have been sent and is still pending. Do not try again: contact support so it can be checked."
+private const val LOG_TAG = "StakeViewModel"
+private const val CLEAR_ATTEMPTS = 3
 private const val RECORD_FAILED_MESSAGE = "The stake could not be prepared safely on this phone, so nothing was sent. Try again."
 
 /** The record could not be written, so the transfer must not be submitted. */
@@ -182,6 +189,8 @@ class StakeViewModel(
     private val store: PendingTransferStore = InMemoryPendingTransferStore(),
     /** What became of a recorded transfer; the default can never say it is gone, so it never allows a rebuild. */
     private val resolver: TxResolver = FailClosedTxResolver,
+    /** Where the store (disk) is touched; production passes IO, the default runs inline. */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
 ) : ViewModel() {
 
     @Inject
@@ -199,7 +208,7 @@ class StakeViewModel(
         resolver: TxResolver,
     ) : this(
         miners, rewards, stakes, algod, bridge, session, clock,
-        openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor, store = store, resolver = resolver,
+        openUri = { uri -> launcher.open(uri, null) }, inhibitor = inhibitor, store = store, resolver = resolver, ioDispatcher = Dispatchers.IO,
     )
 
     private val ui = MutableStateFlow(StakeUiState())
@@ -300,24 +309,19 @@ class StakeViewModel(
     }
 
     fun retry() {
-        val address = address()
-        if (address != null) {
-            when (val pending = pendingFor(address)) {
-                Pending.Unreadable -> {
-                    blockedUnknown()
-                    return
+        job?.cancel()
+        job = viewModelScope.launch {
+            val address = address()
+            when (val pending = if (address == null) Pending.None else pendingFor(address)) {
+                Pending.Unreadable -> blockedUnknown()
+                is Pending.Found -> holdingInstalls { if (resume(pending.sent) == Resumed.REBUILD) restartFresh() }
+                Pending.None -> {
+                    val key = ui.value.minerKey ?: return@launch
+                    val context = ui.value.context ?: return@launch
+                    start(key, context, ui.value.byod)
                 }
-                is Pending.Found -> {
-                    job?.cancel()
-                    job = viewModelScope.launch { holdingInstalls { if (resume(pending.sent) == Resumed.REBUILD) restartFresh() } }
-                    return
-                }
-                Pending.None -> Unit
             }
         }
-        val key = ui.value.minerKey ?: return
-        val context = ui.value.context ?: return
-        start(key, context, ui.value.byod)
     }
 
     fun openWallet() {
@@ -518,7 +522,7 @@ class StakeViewModel(
             // the unsigned transaction used for the id (and then without a last valid round, so it never allows a rebuild);
             // with neither, the record is POSSIBLY_BROADCAST and always blocks.
             val parsed = SignedTxnReader.parse(signed)
-            val knownId = parsed?.txId ?: summary?.txId
+            val knownId = parsed?.txId ?: summary?.txId?.takeIf { it.isNotBlank() }
             val toSend = PendingTransfer(
                 kind = TransferKind.STAKE,
                 sender = address,
@@ -537,9 +541,9 @@ class StakeViewModel(
             )
             // From here the transfer can reach the network whatever submit reports back: it is on disk first, and a record that
             // cannot be written means nothing is sent.
-            if (!store.put(toSend)) throw RecordNotSaved()
+            if (!io { store.putNew(toSend) }) throw RecordNotSaved()
             recorded = toSend
-            val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()
+            val returned = bridge.submit(listOf(signed), WAIT_ROUNDS).firstOrNull()?.takeIf { it.isNotBlank() }
                 ?: throw BridgeException(BridgeErrorCode.UNKNOWN, "The bridge returned no transaction id")
             if (toSend.txId != null && returned != toSend.txId) throw TxIdMismatch()
             toSend to returned
@@ -549,7 +553,7 @@ class StakeViewModel(
             return
         } catch (e: TxIdMismatch) {
             // Neither id can be trusted: keep the record, without an id, so only the account search can resolve it.
-            recorded?.let { store.put(it.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)) }
+            recorded?.let { downgradeToUnidentified(it) }
             dispatch(StakeEvent.SubmitFailed(CODE_TXN_PENDING, UNKNOWN_BROADCAST_MESSAGE))
             return
         } catch (e: BridgeException) {
@@ -576,7 +580,7 @@ class StakeViewModel(
             return
         }
         // submit gave the id: a transfer without one is identified by it from here on.
-        val identified = if (transfer.txId == null) transfer.copy(txId = txId, state = TransferState.PRE_SUBMIT).also { store.put(it) } else transfer
+        val identified = if (transfer.txId == null) identify(transfer, txId) else transfer
         val sent = PendingBroadcast(identified, context)
         dispatch(StakeEvent.Submitted(txId))
         afterBroadcast(sent, Confirmation.WAIT)
@@ -613,8 +617,8 @@ class StakeViewModel(
                 sent.context,
                 StakeSubmitPayload(address = sent.address, minerKey = sent.minerKey, txId = txId, amount = sent.amount, assetId = sent.transfer.assetId),
             )
-            // Cleared before the state moves on, so nothing can resume and record this stake a second time (a failed clear is retried once).
-            if (!clear(sent)) clear(sent)
+            // Cleared before the state moves on, so nothing can resume and record this stake a second time (a failed clear is retried, up to three tries, and logged).
+            clear(sent)
             dispatch(StakeEvent.Recorded(result.txId ?: txId, result.waived))
             runCatching { miners.refreshDetail(sent.minerKey) }
         } catch (e: CancellationException) {
@@ -686,7 +690,7 @@ class StakeViewModel(
         val found = safely { resolver.findTransfer(t.sender, t.receiver, t.assetId, t.amountMicro, t.firstValid ?: t.builtRound) }
         if (found is TxResolution.Confirmed) {
             val identified = t.copy(txId = found.txId, state = TransferState.PRE_SUBMIT)
-            store.put(identified) // if this fails the unidentified record stays and still blocks
+            if (!io { store.put(identified) }) Log.w(LOG_TAG, "could not record the id found for a pending stake transfer") // the unidentified record stays and still blocks
             val next = PendingBroadcast(identified, sent.context)
             showSubmitting(next)
             afterBroadcast(next, Confirmation.CONFIRMED)
@@ -727,14 +731,37 @@ class StakeViewModel(
     }
 
     /** The recorded transfer of [address], if any. */
-    private fun pendingFor(address: String): Pending = when (val found = store.find(address, TransferKind.STAKE)) {
+    private suspend fun pendingFor(address: String): Pending = when (val found = io { store.find(address, TransferKind.STAKE) }) {
         PendingLookup.None -> Pending.None
         PendingLookup.Unreadable -> Pending.Unreadable
         is PendingLookup.Found -> contextFrom(found.record.row)?.let { Pending.Found(PendingBroadcast(found.record, it)) } ?: Pending.Unreadable
     }
 
     /** Removes the record once the dashboard has recorded the stake or the transfer is proven dead; false = it is still there. */
-    private fun clear(sent: PendingBroadcast): Boolean = store.remove(sent.address, TransferKind.STAKE, sent.minerKey, sent.transfer.row)
+    private suspend fun clear(sent: PendingBroadcast): Boolean {
+        repeat(CLEAR_ATTEMPTS) {
+            if (io { store.remove(sent.address, TransferKind.STAKE, sent.minerKey, sent.transfer.row) }) return true
+        }
+        Log.w(LOG_TAG, "could not clear the pending stake record after $CLEAR_ATTEMPTS tries")
+        return false
+    }
+
+    /** The submit result named another id than the signed bytes: the record loses its id (retried once) or, failing that, is blocked for this process. */
+    private suspend fun downgradeToUnidentified(record: PendingTransfer) {
+        val unidentified = record.copy(txId = null, state = TransferState.POSSIBLY_BROADCAST)
+        if (io { store.put(unidentified) } || io { store.put(unidentified) }) return
+        Log.e(LOG_TAG, "could not rewrite a pending stake record after a txid mismatch: blocked for this process")
+        io { store.blockPermanently(record.sender, record.kind, record.minerKey, record.row) }
+    }
+
+    /** submit named the id of a transfer that had none: written down, or logged when that fails (the record then stays unidentified and blocks). */
+    private suspend fun identify(transfer: PendingTransfer, txId: String): PendingTransfer {
+        val identified = transfer.copy(txId = txId, state = TransferState.PRE_SUBMIT)
+        if (!io { store.put(identified) }) Log.w(LOG_TAG, "could not record the id of a submitted stake transfer")
+        return identified
+    }
+
+    private suspend fun <T> io(block: () -> T): T = withContext(ioDispatcher) { block() }
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try {
         block()

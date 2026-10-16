@@ -76,6 +76,8 @@ class ClaimPendingFeeTest {
     private var submitReturns: List<String>? = null
     private var onSubmit: () -> Unit = {}
     private var feeSigned = false
+    private var onGroupSign: () -> Unit = {}
+    private var ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
 
     private class ScriptedResolver : TxResolver {
         var verdict: TxResolution = TxResolution.Unknown
@@ -109,6 +111,7 @@ class ClaimPendingFeeTest {
 
         override suspend fun signTxns(groups: List<List<TxnToSign>>): List<List<String?>> {
             val result = fake.signTxns(groups)
+            if ((groups.singleOrNull()?.size ?: 0) > 1) onGroupSign()
             val blob = signedBlob
             // only the fee payment (the first signature of a claim) carries the real bytes
             if (blob == null || feeSigned || groups.singleOrNull()?.singleOrNull() == null) return result
@@ -149,7 +152,7 @@ class ClaimPendingFeeTest {
 
     private fun vm(s: com.frynetworks.fryapp.auth.SessionRepository = session) = ClaimViewModel(
         rewards, algod, miners, bridge, s, fixedClock(now),
-        openUri = {}, pollDelayMillis = 0, optInRetryDelayMillis = 0, store = store, resolver = resolver,
+        openUri = {}, pollDelayMillis = 0, optInRetryDelayMillis = 0, store = store, resolver = resolver, ioDispatcher = ioDispatcher,
     )
 
     private fun pays() = fake.built.count { it.startsWith("pay|") }
@@ -489,5 +492,260 @@ class ClaimPendingFeeTest {
         assertTrue(vm.uiState.value.state is ClaimState.Done)
         assertNull(record())
         assertEquals(1, pays())
+    }
+
+    // --- round 2 ------------------------------------------------------------------------------------------------------------
+
+    private fun seeded(
+        txId: String? = payTxId,
+        createdAt: Long = now,
+        lastValid: Long? = payLastValid,
+        state: TransferState = TransferState.PRE_SUBMIT,
+        row: String = "all",
+    ): PendingTransfer {
+        val r = PendingTransfer(
+            kind = TransferKind.CLAIM_FEE, sender = TEST_ADDRESS, minerKey = key, row = row, assetId = 0L,
+            amount = StakeRepository.CLAIM_FEE_MICROALGO.toString(), amountMicro = StakeRepository.CLAIM_FEE_MICROALGO,
+            receiver = StakeRepository.CLAIM_FEE_WALLET, txId = txId, firstValid = 66_029_053L, lastValid = lastValid, builtRound = 1_000L,
+            state = state, createdAt = createdAt,
+        )
+        assertTrue(store.put(r))
+        return r
+    }
+
+    private fun confirmedFeeThenFail(configure: () -> Unit): ClaimViewModel {
+        status = TxStatus.Confirmed(66_029_500)
+        signedBlob = paySigned
+        configure()
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        return vm
+    }
+
+    @Test
+    fun `a confirmed fee is spent when the dashboard says a claim is already in progress`() = runTest {
+        confirmedFeeThenFail { rewards.envelopeError = com.frynetworks.fryapp.network.dashboard.DashboardException("REWARD_ALREADY_CLAIMING", "in flight", httpStatus = 409) }
+        assertNull(record())
+        assertEquals(1, pays())
+    }
+
+    @Test
+    fun `a confirmed fee is spent when the claim group expired before it was confirmed`() = runTest {
+        confirmedFeeThenFail { rewards.confirmError = com.frynetworks.fryapp.network.dashboard.DashboardException("CLAIM_GROUP_EXPIRED", "expired", httpStatus = 410) }
+        assertNull(record())
+    }
+
+    @Test
+    fun `a confirmed fee is spent when the dashboard reports no claimable rewards at the envelope`() = runTest {
+        confirmedFeeThenFail { rewards.envelopeError = com.frynetworks.fryapp.network.dashboard.DashboardException("NO_REWARDS", "none", httpStatus = 400) }
+        assertNull(record())
+    }
+
+    @Test
+    fun `a transient envelope failure keeps the confirmed fee`() = runTest {
+        confirmedFeeThenFail { rewards.envelopeError = com.frynetworks.fryapp.network.dashboard.DashboardException("SERVER", "down", httpStatus = 500) }
+        assertTrue(record() != null)
+    }
+
+    @Test
+    fun `a fee whose payment may still be in flight is never cleared by a permanent failure`() = runTest {
+        status = TxStatus.Unknown // never confirmed as far as the node can say
+        signedBlob = paySigned
+        rewards.envelopeError = com.frynetworks.fryapp.network.dashboard.DashboardException("REWARD_ALREADY_CLAIMING", "in flight", httpStatus = 409)
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertTrue(record() != null)
+        status = TxStatus.InPool
+        vm.retry()
+        vm.confirm()
+        assertTrue(record() != null)
+    }
+
+    @Test
+    fun `a confirmed but unused fee older than the window is cleared and a new fee is paid`() = runTest {
+        seeded(createdAt = now - 31 * 60_000L)
+        status = TxStatus.Confirmed(66_029_500)
+        signedBlob = paySigned
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertEquals(1, pays())
+        assertTrue(vm.uiState.value.state is ClaimState.Done)
+        assertNull(record())
+    }
+
+    @Test
+    fun `a confirmed fee inside the window is reused and not paid again`() = runTest {
+        seeded(createdAt = now - 20 * 60_000L)
+        status = TxStatus.Confirmed(66_029_500)
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertEquals(0, pays())
+        assertTrue(vm.uiState.value.state is ClaimState.Done)
+    }
+
+    @Test
+    fun `an old fee whose payment is not confirmed is never cleared by the window`() = runTest {
+        seeded(createdAt = now - 3 * 60 * 60_000L)
+        status = TxStatus.Unknown
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(0, pays())
+        assertTrue(record() != null)
+        status = TxStatus.InPool
+        backing.waitError = com.frynetworks.fryapp.network.dashboard.DashboardException("TXN_NOT_CONFIRMED", "slow")
+        vm.retry()
+        vm.confirm()
+        assertEquals(0, pays())
+        assertTrue(record() != null)
+    }
+
+    @Test
+    fun `the record is cleared with the sender captured at the start even when the session is gone by then`() = runTest {
+        status = TxStatus.Confirmed(66_029_500)
+        signedBlob = paySigned
+        onGroupSign = { session.clear() }
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertTrue(vm.uiState.value.state is ClaimState.Done)
+        assertNull(record())
+    }
+
+    @Test
+    fun `a blank txid from submit is no id and never reaches the envelope`() = runTest {
+        for (blank in listOf("", "  ")) {
+            store = InMemoryPendingTransferStore()
+            fake.built.clear()
+            rewards.envelopeCalls.clear()
+            submitReturns = listOf(blank)
+            val vm = vm()
+            vm.start(key)
+            vm.confirm()
+            val r = record()!!
+            assertEquals(TransferState.POSSIBLY_BROADCAST, r.state)
+            assertNull(r.txId)
+            assertEquals("TXN_PENDING", failed(vm).code)
+            assertTrue(rewards.envelopeCalls.isEmpty())
+        }
+    }
+
+    @Test
+    fun `a blank txid from submit never replaces the id the bytes gave`() = runTest {
+        signedBlob = paySigned
+        submitReturns = listOf("")
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertEquals(payTxId, record()!!.txId)
+        assertTrue(rewards.envelopeCalls.isEmpty())
+    }
+
+    @Test
+    fun `a blank decoded txid is no id`() = runTest {
+        decodedTxId = ""
+        throwOnFeeSubmit = IOException("connection reset")
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertNull(record()!!.txId)
+        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
+    }
+
+    @Test
+    fun `a fee that may have been sent says it is still pending and to contact support`() = runTest {
+        throwOnFeeSubmit = IOException("connection reset")
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        val message = failed(vm).message
+        assertTrue(message, message.contains("still pending", ignoreCase = true) && message.contains("contact support", ignoreCase = true))
+        throwOnFeeSubmit = null
+        reopenAndConfirm(vm)
+        assertTrue(failed(vm).message.contains("contact support", ignoreCase = true))
+    }
+
+    @Test
+    fun `when the mismatch downgrade cannot be written the fee key is blocked for the process`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = paySigned
+        submitReturns = listOf("SOMETHINGELSE")
+        onSubmit = { prefs.commitResult = false }
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        prefs.commitResult = true
+        assertEquals("TXN_PENDING", failed(vm).code)
+        resolver.verdict = TxResolution.Absent
+        status = TxStatus.Absent
+        submitReturns = null
+        reopenAndConfirm(vm)
+        assertEquals(1, pays())
+
+        val reborn = vm()
+        reborn.start(key)
+        reborn.confirm()
+        assertEquals(1, pays())
+        assertEquals(1, fake.submitted.size)
+        assertTrue(failed(reborn).message.contains("contact support", ignoreCase = true))
+    }
+
+    @Test
+    fun `the fee downgrade write is retried once`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = paySigned
+        submitReturns = listOf("SOMETHINGELSE")
+        onSubmit = { prefs.failCommits = 1 }
+        vm().also { it.start(key); it.confirm() }
+        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
+        assertNull(record()!!.txId)
+    }
+
+    @Test
+    fun `a fee record that appears between the check and the write is never overwritten and nothing is submitted`() = runTest {
+        val rival = seeded(txId = "RIVALTX")
+        store.remove(TEST_ADDRESS, TransferKind.CLAIM_FEE, key, "all")
+        val inner = InMemoryPendingTransferStore()
+        store = object : PendingTransferStore by inner {
+            override fun putNew(record: PendingTransfer): Boolean {
+                inner.put(rival)
+                return inner.putNew(record)
+            }
+        }
+        signedBlob = paySigned
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertTrue(fake.submitted.isEmpty())
+        assertEquals("RIVALTX", record()!!.txId)
+        assertEquals("TXN_RECORD_FAILED", failed(vm).code)
+    }
+
+    /** Runs every block inline but counts the dispatches. */
+    private class CountingDispatcher : kotlinx.coroutines.CoroutineDispatcher() {
+        var dispatched = 0
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            dispatched++
+            block.run()
+        }
+    }
+
+    @Test
+    fun `every store access of a claim runs on the injected IO dispatcher`() = runTest {
+        val counting = CountingDispatcher()
+        ioDispatcher = counting
+        signedBlob = paySigned
+        val vm = vm()
+        vm.start(key)
+        vm.confirm()
+        assertTrue(vm.uiState.value.state is ClaimState.Done)
+        assertTrue("dispatched ${counting.dispatched}", counting.dispatched >= 3) // lookup, first write, clear
     }
 }

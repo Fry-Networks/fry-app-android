@@ -150,8 +150,13 @@ class StakePendingTransferTest {
 
     @After fun tearDown() = Dispatchers.resetMain()
 
+    private var ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+
     private fun vm(s: com.frynetworks.fryapp.auth.SessionRepository = session) =
-        StakeViewModel(miners, rewards, stakes, algod, bridge, s, fixedClock(1_757_592_000_000L), openUri = {}, store = store, resolver = resolver)
+        StakeViewModel(
+            miners, rewards, stakes, algod, bridge, s, fixedClock(1_757_592_000_000L),
+            openUri = {}, store = store, resolver = resolver, ioDispatcher = ioDispatcher,
+        )
 
     private fun begin(vm: StakeViewModel = vm()): StakeViewModel {
         vm.start(key, StakeContext.Registration, byod = false)
@@ -490,6 +495,158 @@ class StakePendingTransferTest {
         vm.retry()
         assertEquals("TXN_PENDING", failed(vm).code)
         assertEquals(1, transfers())
+        assertTrue(record() != null)
+    }
+
+    // --- round 2: atomic first write, contact support, blank ids, hard block, IO dispatcher, clear retries ----------------------------
+
+    /** A store in which a competing record for the same sender appears between the view model's check and its write. */
+    private class RacingStore(private val inner: PendingTransferStore, private val rival: com.frynetworks.fryapp.data.pending.PendingTransfer) :
+        PendingTransferStore by inner {
+        override fun putNew(record: com.frynetworks.fryapp.data.pending.PendingTransfer): Boolean {
+            inner.put(rival)
+            return inner.putNew(record)
+        }
+    }
+
+    @Test
+    fun `a record that appears between the check and the write is never overwritten and nothing is submitted`() = runTest {
+        val rival = com.frynetworks.fryapp.data.pending.PendingTransfer(
+            kind = TransferKind.STAKE, sender = TEST_ADDRESS, minerKey = key, row = "registration", assetId = FryAsset.TFRY.id,
+            amount = "80", amountMicro = 80_000_000, receiver = StakeRepository.STAKE_WALLET, txId = "RIVALTX", firstValid = 1, lastValid = 2,
+            builtRound = 1, state = TransferState.PRE_SUBMIT, createdAt = 1L,
+        )
+        store = RacingStore(InMemoryPendingTransferStore(), rival)
+        signedBlob = vectorSigned
+        val vm = begin()
+        assertTrue(fake.submitted.isEmpty())
+        assertEquals("RIVALTX", record()!!.txId)
+        assertEquals("TXN_RECORD_FAILED", failed(vm).code)
+    }
+
+    @Test
+    fun `a transfer that may have been sent says it is still pending and to contact support`() = runTest {
+        failSubmitOnce(real = false)
+        val vm = begin()
+        val message = failed(vm).message
+        assertTrue(message, message.contains("still pending", ignoreCase = true) && message.contains("contact support", ignoreCase = true))
+        vm.retry()
+        assertTrue(failed(vm).message.contains("contact support", ignoreCase = true))
+    }
+
+    @Test
+    fun `a blank txid from submit is no id, so a transfer without a readable id stays possibly broadcast`() = runTest {
+        for (blank in listOf("", "   ")) {
+            store = InMemoryPendingTransferStore()
+            fake.built.clear()
+            submitReturns = listOf(blank)
+            val vm = begin(vm())
+            val r = record()!!
+            assertEquals(TransferState.POSSIBLY_BROADCAST, r.state)
+            assertNull(r.txId)
+            assertTrue(failed(vm).txId == null)
+            assertEquals("TXN_PENDING", failed(vm).code)
+        }
+    }
+
+    @Test
+    fun `a blank txid from submit never becomes the recorded id when the bytes gave one`() = runTest {
+        signedBlob = vectorSigned
+        submitReturns = listOf("")
+        val vm = begin()
+        assertEquals(vectorTxId, record()!!.txId)
+        assertTrue(vm.uiState.value.state !is StakeState.Done)
+        assertTrue(vm.uiState.value.state !is StakeState.Submitting)
+    }
+
+    @Test
+    fun `a blank decoded txid is no id`() = runTest {
+        decodedTxId = ""
+        failSubmitOnce(real = false)
+        begin()
+        assertNull(record()!!.txId)
+        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
+    }
+
+    @Test
+    fun `when the mismatch downgrade cannot be written the key is blocked for the process and nothing is rebuilt`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = vectorSigned
+        submitReturns = listOf("SOMETHINGELSE")
+        onSubmit = { prefs.commitResult = false } // the record is on disk; from now on writes fail
+        val vm = begin()
+        prefs.commitResult = true
+        assertEquals("TXN_PENDING", failed(vm).code)
+        assertEquals(vectorTxId, (prefs.map.values.single() as String).let { Regex("\"txId\":\"([A-Z0-9]+)\"").find(it)!!.groupValues[1] })
+
+        resolver.verdict = TxResolution.Absent
+        status = TxStatus.Absent
+        vm.retry()
+        vm.start(key, StakeContext.Registration, byod = false)
+        vm.confirm()
+        assertEquals(1, transfers())
+
+        val reborn = vm()
+        reborn.start(key, StakeContext.Registration, byod = false)
+        reborn.confirm()
+        assertEquals(1, transfers())
+        assertEquals(1, fake.submitted.size)
+        assertTrue(failed(reborn).message.contains("contact support", ignoreCase = true))
+    }
+
+    @Test
+    fun `the downgrade write is retried once and a second success is enough`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = vectorSigned
+        submitReturns = listOf("SOMETHINGELSE")
+        onSubmit = { prefs.failCommits = 1 } // the first downgrade write fails, the retry succeeds
+        begin()
+        assertEquals(TransferState.POSSIBLY_BROADCAST, record()!!.state)
+        assertNull(record()!!.txId)
+        assertEquals(1, transfers())
+    }
+
+    /** Runs every block inline but counts the dispatches, to show where the store is touched. */
+    private class CountingDispatcher : kotlinx.coroutines.CoroutineDispatcher() {
+        var dispatched = 0
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            dispatched++
+            block.run()
+        }
+    }
+
+    @Test
+    fun `every store access of a stake runs on the injected IO dispatcher`() = runTest {
+        val counting = CountingDispatcher()
+        ioDispatcher = counting
+        signedBlob = vectorSigned
+        val vm = begin()
+        assertDone(vm)
+        // gate lookup, first write, clear after Recorded and the open-time lookup each go through the dispatcher
+        assertTrue("dispatched ${counting.dispatched}", counting.dispatched >= 4)
+    }
+
+    @Test
+    fun `a failed clear after the dashboard recorded the stake is retried up to three times`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = vectorSigned
+        onSubmit = { prefs.failCommits = 2 } // the next two commits (the clear's first two tries) fail
+        val vm = begin()
+        assertDone(vm)
+        assertNull(record())
+    }
+
+    @Test
+    fun `a clear that fails every time leaves the record and still shows the recorded stake`() = runTest {
+        val prefs = PendingTransferStoreTest.FakePrefs()
+        store = SharedPrefsPendingTransferStore(prefs)
+        signedBlob = vectorSigned
+        onSubmit = { prefs.failCommits = 3 }
+        val vm = begin()
+        assertDone(vm)
         assertTrue(record() != null)
     }
 }
