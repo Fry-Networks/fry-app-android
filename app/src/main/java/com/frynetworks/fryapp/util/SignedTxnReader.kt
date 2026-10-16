@@ -41,6 +41,20 @@ object SignedTxnReader {
         }
     }
 
+    /** A bare unsigned transaction (the `txn` map alone, as the dashboard sends the claim's user leg); its id is the same hash as in the signed form. */
+    fun parseBare(txnB64: String): SignedTxn? {
+        val bytes = try {
+            Base64.getDecoder().decode(txnB64)
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        return try {
+            Reader(bytes).txnFields(bytes, bare = true)
+        } catch (e: RuntimeException) {
+            null
+        }
+    }
+
     fun base32NoPad(input: ByteArray): String {
         val out = StringBuilder((input.size * 8 + 4) / 5)
         var buffer = 0
@@ -84,7 +98,7 @@ object SignedTxnReader {
             return Reader(raw).txnFields(raw)
         }
 
-        fun txnFields(raw: ByteArray): SignedTxn? {
+        fun txnFields(raw: ByteArray, bare: Boolean = false): SignedTxn? {
             var fv: Long? = null
             var lv: Long? = null
             var xaid: Long? = null
@@ -107,6 +121,7 @@ object SignedTxnReader {
                 }
             }
             if (pos != b.size) return null
+            if (bare && ("type" !in seen || "sig" in seen || "txn" in seen)) return null
             val id = base32NoPad(Sha512_256.digest("TX".toByteArray(Charsets.US_ASCII) + raw))
             return SignedTxn(raw, id, fv, lv, xaid, amount, snd, rcv)
         }

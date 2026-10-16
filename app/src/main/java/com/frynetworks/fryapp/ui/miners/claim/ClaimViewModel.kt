@@ -598,7 +598,14 @@ class ClaimViewModel(
         when (val state = ui.value.state) {
             is ClaimState.AwaitingSignature -> {
                 // The fee is tied to this claim on disk before anything is signed.
-                if (!bindClaim(target, userPaysBinding(envelope, priorBinding, rebind))) return
+                val binding = userPaysBinding(envelope, priorBinding, rebind)
+                if (envelope.unsignedUserLeg.isNullOrBlank() || binding.claimTxId == null) {
+                    // Nothing can be tied to this claim, so nothing is signed: the fee stays this claim's own.
+                    unbind(target)
+                    failDirect("INVALID_ENVELOPE", ErrorCopy.forCode("INVALID_ENVELOPE"))
+                    return
+                }
+                if (!bindClaim(target, binding)) return
                 signGroup(state.groupId, envelope, target)
             }
             ClaimState.Confirming -> {
@@ -697,7 +704,7 @@ class ClaimViewModel(
     /** The user leg's id and last valid round come from its own bytes; only when they cannot be read is the bridge's decode used (without a round). */
     private suspend fun userPaysBinding(envelope: ClaimEnvelopeResponse, prior: ClaimFeeBinding?, rebind: Boolean): ClaimFeeBinding {
         val leg = envelope.unsignedUserLeg.orEmpty()
-        val parsed = SignedTxnReader.parse(leg)
+        val parsed = SignedTxnReader.parse(leg) ?: SignedTxnReader.parseBare(leg)
         val id = parsed?.txId ?: safely { bridge.decodeTxn(leg) }?.txId?.takeIf { it.isNotBlank() }
         return ClaimFeeBinding(ClaimFeeBinding.USER_PAYS, id, envelope.groupId, parsed?.lastValid, rebound = prior?.rebound == true || rebind)
     }
@@ -835,7 +842,7 @@ class ClaimViewModel(
         val feeTxId = record.txId ?: return PriorFee.Blocked(PENDING_FEE_MESSAGE)
         return when (claimOutcome(claimId, binding.claimLastValid)) {
             ClaimOutcome.CONFIRMED -> removeSpent(target)
-            ClaimOutcome.ABSENT -> if (binding.rebound) PriorFee.Blocked(PENDING_FEE_MESSAGE) else PriorFee.Paid(feeTxId, binding, rebind = true)
+            ClaimOutcome.ABSENT -> if (binding.rebound) PriorFee.Blocked(UNKNOWN_FEE_MESSAGE) else PriorFee.Paid(feeTxId, binding, rebind = true)
             ClaimOutcome.UNKNOWN -> PriorFee.Blocked(PENDING_FEE_MESSAGE)
         }
     }
