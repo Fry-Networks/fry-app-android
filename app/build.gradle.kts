@@ -17,8 +17,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // Release builds pass -PfryVersionCode / -PfryVersionName (release.yml); these are the defaults.
-        versionCode = (project.findProperty("fryVersionCode") as String?)?.toInt() ?: 16
-        versionName = (project.findProperty("fryVersionName") as String?) ?: "0.4.9"
+        versionCode = (project.findProperty("fryVersionCode") as String?)?.toInt() ?: 17
+        versionName = (project.findProperty("fryVersionName") as String?) ?: "0.4.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
