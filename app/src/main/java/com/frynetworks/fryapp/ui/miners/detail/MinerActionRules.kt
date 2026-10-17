@@ -68,7 +68,7 @@ object MinerActionRules {
         val hasVerification = detail?.staked?.amount != null
         return MinerActionGating(
             claim = claimable.signum() > 0,
-            stakeRegistration = detail != null && !detail.isRegistered && stake?.register != null,
+            stakeRegistration = detail != null && !detail.isRegistered && (stake?.register?.signum() ?: 0) > 0,
             showStakeNode = isNode,
             stakeNode = isNode && !hasNode && stake?.node != null,
             stakeVerification = detail != null && !hasVerification && (stake?.stakeOne != null || stake?.stakeTwo != null),

@@ -218,6 +218,7 @@ private fun computeReady(state: StakeState.Loading): StakeState {
         StakeContext.Registration, StakeContext.Node -> {
             val usd = (if (context == StakeContext.Registration) StakeMath.registrationUsd(state.product, state.byod)
             else StakeMath.nodeUsd(state.product, state.byod)) ?: return noAmount
+            if (usd.signum() <= 0) return noAmount
             val tokens = StakeMath.tokensFor(usd, state.price)
                 ?: return StakeState.Failed(CODE_INVALID_PRICE, "No valid asset price is available.", recoverable = true)
             StakeState.Ready(BigDecimal.valueOf(tokens), state.asset, usd)
