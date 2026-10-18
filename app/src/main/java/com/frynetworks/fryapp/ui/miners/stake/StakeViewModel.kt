@@ -396,6 +396,10 @@ class StakeViewModel(
             return
         }
         val asset = assetFor(product, context, MinerFamily.fromMinerKey(key))
+        if (asset == null) {
+            failDirect("UNKNOWN_ASSET", "This stake uses a token the app does not recognise. Update the app and try again.")
+            return
+        }
         val price = try {
             rewards.prices(listOf(asset.id))[asset.id]
         } catch (e: CancellationException) {
@@ -971,14 +975,22 @@ class StakeViewModel(
         /** Same shape as JavaScript `Date.prototype.toISOString()` (always millisecond precision, `Z`). */
         fun isoTimestamp(epochMillis: Long): String = ISO_MILLIS.format(Instant.ofEpochMilli(epochMillis))
 
-        /** The ASA the product expects for this context (`reward.tokens.*`), else the family's reward asset. */
-        fun assetFor(product: Product, context: StakeContext, family: MinerFamily): FryAsset {
+        /**
+         * The ASA the product expects for this context (`reward.tokens.*`), else the family's reward asset.
+         * A registration token that is all digits is an ASA id and must match a [FryAsset]; an unknown id returns null
+         * (the caller fails the stake) rather than falling back to another asset.
+         */
+        fun assetFor(product: Product, context: StakeContext, family: MinerFamily): FryAsset? {
             val symbol = when (context) {
                 StakeContext.Registration -> product.reward?.tokens?.register
                 StakeContext.Node -> product.reward?.tokens?.node
                 is StakeContext.Verification -> product.reward?.tokens?.stake
             }
-            return symbol?.let { s -> FryAsset.entries.firstOrNull { it.symbol.equals(s, ignoreCase = true) } } ?: family.rewardAsset
+            val token = symbol?.trim()
+            if (context == StakeContext.Registration && !token.isNullOrEmpty() && token.all { it in '0'..'9' }) {
+                return token.toLongOrNull()?.let { FryAsset.fromId(it) }
+            }
+            return token?.let { s -> FryAsset.entries.firstOrNull { it.symbol.equals(s, ignoreCase = true) } } ?: family.rewardAsset
         }
     }
 }

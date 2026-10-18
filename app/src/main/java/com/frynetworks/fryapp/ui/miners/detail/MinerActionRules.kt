@@ -70,7 +70,7 @@ object MinerActionRules {
             claim = claimable.signum() > 0,
             stakeRegistration = detail != null && !detail.isRegistered && (stake?.register?.signum() ?: 0) > 0,
             showStakeNode = isNode,
-            stakeNode = isNode && !hasNode && stake?.node != null,
+            stakeNode = isNode && !hasNode && (stake?.node?.signum() ?: 0) > 0,
             stakeVerification = detail != null && !hasVerification && (stake?.stakeOne != null || stake?.stakeTwo != null),
             showWithdraw = hasRegistration || hasNode || hasVerification,
             withdrawRegistration = hasRegistration && unlocked(withdrawable["registration"]),
