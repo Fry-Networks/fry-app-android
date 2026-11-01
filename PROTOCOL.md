@@ -43,7 +43,7 @@ peripheral must still accept the 58-byte wallet via a long/prepared write.
 | Error | Meaning |
 |---|---|
 | 0 | none |
-| 1 | bad SSID (empty or over 32 bytes) |
+| 1 | bad SSID (empty or over 32 bytes), or the join found no AP with that SSID (WIFI_REASON_NO_AP_FOUND) |
 | 2 | WiFi authentication failed |
 | 3 | associated but no IP (DHCP timeout) |
 | 4 | hardwareapi registration failed |
@@ -59,7 +59,7 @@ AP SSID `FRY-SETUP-<MAC6>`, open, IP `192.168.4.1`, DNS catch-all on port 53, HT
 - `POST /provision` takes form-encoded `ssid`, `pass`, `wallet` and returns `200 {"ok":true}` or `400 {"ok":false,"err":"<reason>"}`
 - `GET /status` returns `{"status":0..4,"err":0..5,"minerKey":"FEM-...","ip":"..."}`
 
-The AP is torn down 10 seconds after status reaches 3.
+The AP is torn down 10 seconds after status reaches 3. On the ESP8266 the HTTP server, the DNS catch-all and the scan cache are stopped and freed at the teardown, so none of the endpoints above, `GET /status` included, is served afterwards, not on the station address either.
 
 ## 4. Identity
 
@@ -80,8 +80,11 @@ omitted entirely when both are empty.
 
 - `POST /installations/{miner_key}/installations/{install_id}` with body
   `{"miner_key","install_id","minerCode":"IOTVPN","software_version_installed","poc_version_installed":"1.0.0","hostname","os","is_installed":true,"device_name"}`.
-  Note that `minerCode` is camelCase while every sibling field is snake_case. Send no extra keys.
+  Note that `minerCode` is camelCase while every sibling field is snake_case. Send no extra keys, except the ones listed below.
   The response is `{"status","device_token"}`. Repeat hourly and once after every OTA.
+  Exception, all builds: four unsigned-integer keys follow the nine above, `flash_real_size` (physical flash chip size, bytes), `flash_ide_size` (the size the image header and core believe, bytes), `ota_free_bytes` (room for the next OTA image, bytes) and `sketch_size` (the running image, bytes), so every body has 13 keys.
+  Exception, ESP8266 only (`-DFRY_HEARTBEAT_HEAP=1`): four more unsigned-integer keys follow those 13, `free_heap` (total free heap, bytes), `max_free_block` (largest contiguous free block, bytes), `heap_frag` (fragmentation, percent, 0 = one free block) and `stack_high_water` (loop-stack bytes still unused at its deepest point since boot). The server accepts these keys.
+  Exception, ESP32 family only (`-DFRY_HAS_WIREGUARD=1`, the SOCKS5 relay): three more unsigned-integer keys follow those 13, `relay_p50_ms`, `relay_p95_ms` and `relay_samples`. They summarise the last 60 **successful** upstream connects the relay made, measured from the `connect()` call to its result (name resolution excluded): `relay_p50_ms` is the median (an even count takes the mean of the two middle values, truncated), `relay_p95_ms` is the nearest-rank 95th percentile (`sorted[ceil(0.95*n)-1]`), and `relay_samples` is how many of those 60 slots are filled. All three are always present: before the first connect they are `0`, `0`, `0`, and `relay_samples` is how a reader tells "no data" from "0 ms". The server accepts these keys.
 - `POST` or `PATCH /installations/{miner_key}/leases/{install_id}` with body `{"lease_seconds":900}`.
 - `PUT /PoC/{miner_key}/hardware` with body `{"document":{...}}`, one slot per call, where
   `slot_number = (UTC minutes since midnight / 10) % 144`. Success is any 2xx; there is no response body.
@@ -167,7 +170,7 @@ board resets on every connect.
 ## 9. Serial log lines that the QA gates grep for
 
 ```
-FRY boot v<ver> chip=<CHIP> mac=<MAC> minerkey=FEM-<32HEX>
+FRY boot v<ver> chip=<CHIP> mac=<MAC> minerkey=FEM-…<last4> (or IOT-…<last4>, NONE, FEM-PENDING)
 [boot] ready
 BLE advertising name=<devname> svc=46525900
 AP started FRY-SETUP-<MAC6> ip=192.168.4.1
@@ -299,7 +302,8 @@ means protocol 1.
 - **Phases.** Current state (`0x02`), device info (`0x03`) and `0xF1` are answered in EVERY phase, so
   a web flasher connecting to a working board recognises it (and offers Update, not erase). `0x01`
   Wi-Fi settings and `0x04` scan are still answered only while the provisioning transport is up;
-  otherwise the reply is Improv error `0x04`. `0xF0` is accepted in any phase. `0x42` and every
+  otherwise the reply is Improv error `0x04` (11.8 replaces this for both). `0xF0` is accepted in
+  any phase. `0x42` and every
   other unassigned command, the rest of `0xF0`-`0xFF` included, stay "unknown command".
 - **`0xF0` FrySetMinerKey.** RPC data `[36][key]`. A length byte that disagrees with the data, or a
   value that cannot be buffered, is Improv error `0x01`; a well-framed key of the wrong length or
@@ -338,7 +342,9 @@ kFryStatusKeyRequired    494d50524f56010429f127013101340134013601300005302e342e3
 - **Manifest additions** (section 6 shape unchanged): optional `"channel":"prod"|"test"`; a missing
   channel reads as `prod`. Firmware 0.4+ ignores a manifest whose channel is not its own.
 - **Left-out chips.** `builds` may omit an environment on purpose. The prod manifest omits the envs
-  listed in `tools/ota_channels.json` (from 0.4.0: `esp32s3`, `esp8266`). A board whose
+  listed in `tools/ota_channels.json` (from 0.4.0: `esp32s3`, `esp8266`), except an env the release
+  command line includes with `--include-env` (`release-fw.yml` does that for `esp8266` from 0.4.11,
+  with no rollout key; the config file still lists it). A board whose
   `FRY_BUILD_ENV` has no entry does not update, and never takes another chip's image; v0.3.1 and
   0.3.3 behave the same (`test/test_legacy_manifest_select`). Their images are still published for
   manual flashing.
@@ -422,10 +428,26 @@ AP restarted FRY-SETUP-<MAC6> after the failed join - /provision accepts a new a
   is physical access, the same trust as `0xF0`): they are persisted and the board restarts into
   them; no Provisioned state or URL is reported for the connection it is leaving. A board that
   was provisioned earlier this boot (state 2 Connecting or 3 Connected) starts over the same way;
-  a board in Error starts over too, whatever the error. `0x04` scan is
-  still answered only while the provisioning transport is up. The restart after an `0xF0` key change
+  a board in Error starts over too, whatever the error. The restart after an `0xF0` key change
   waits for 3 s without another Improv command; a `0x01` sent within that window restarts the board
   anyway. This replaces the 11.4 rule that `0x01` is gated on the provisioning transport.
+- **Improv `0x04` scan on a running board.** A scan is answered while the provisioning transport is
+  up, as before, and now also on a board that joined its network, so a flasher's "Change Wi-Fi"
+  can list networks there too. On a running board it runs only while the station is joined (a
+  scan started while it is joining would disconnect it), at most once per 30 s, and only with the
+  largest free heap block at least 16384 bytes (ESP8266 only; the ESP32 family has no floor);
+  otherwise the reply is Improv error `0x04`, as in 11.4. A refused request does not restart the
+  30 s window, so a second `0x04` sent while a running-board scan is still in flight is answered
+  with error `0x04` and the first scan's rows still arrive. This replaces the 11.4 rule that `0x04`
+  is gated on the provisioning transport.
+  - Failures. A scan that cannot start, or that the chip reports as failed (`WIFI_SCAN_FAILED`), is
+    answered with Improv error `0xFF`, not an empty list. On a running board a finished scan that
+    found 0 networks counts as failed too (error `0xFF`): the joined network is visible to the
+    scan, and the ESP8266 core reports a scan callback with a non-OK status as 0 networks.
+  - Provisionable board. A finished scan with 0 networks stays an empty list, so an ESP8266 scan
+    callback with a non-OK status (count 0) can still appear there as an empty list. Also unchanged:
+    while a Wi-Fi join that `0x01` started is in flight (ESP8266), a scan request is answered with
+    the empty result at once and no scan runs, because the join owns the radio.
 - **Golden vectors** now live in `test/fixtures/improv_fry_vectors.json` (ASCII-only JSON with each
   vector's inputs); the hex lines in 11.4 are the same bytes.
 - **Image verification (replaces the 11.5 bullet).** A pending image is marked valid only once
@@ -451,7 +473,13 @@ AP restarted FRY-SETUP-<MAC6> after the failed join - /provision accepts a new a
   boot. It never mints a new key and never re-derives an owner's key.
 - **Held chips.** 0.4.0 is not released for ESP32-S3 and ESP8266: not in any manifest and not
   attached to any release; the web flasher keeps their 0.3.3 parts in `docs/flash/fw/hold/`
-  (`manifest-hold.json`).
+  (`manifest-hold.json`). Since 0.4.11 ESP8266 is built, attached and in the prod manifest (no
+  rollout key). The 0.3.1/0.3.3 selection code selects that entry; the 0.3.x ESP8266 fleet is
+  bounded only by an operator-run hardware gate (esp6 gate a, 2026-10-22: the 0.3.3 boards completed
+  0 of 6 manifest checks, boot checks skipping at blk 32880 < 36864 and scheduled checks crashing or
+  ending HTTP -5), not by anything in the repo; a 0.3.x board that ever completes a check would take
+  the update. ESP32-S3 stays held, and the flasher keeps ESP8266 on its 0.3.3 parts until a
+  post-canary flasher commit.
 - **Serial lines added or changed:**
 
 ```
@@ -509,4 +537,43 @@ of 0.4.0 refused every write, and Android then waited on a MITM pairing the boar
 
 ```
 [prov] key write ignored: link not encrypted - pair first (LE Secure Connections)
+```
+
+### 11.10 Round-4 amendment: `reset_reason` on the installation heartbeat
+
+The installation heartbeat of section 5 (`POST /installations/{miner_key}/installations/{install_id}`)
+gains one more key. It extends the list of exceptions to "send no extra keys" in section 5, and nothing
+else in section 5 changes.
+
+- **`reset_reason`**: one unsigned integer, 0 to 255, naming why the chip last reset. Every build sends
+  it, on every heartbeat of a boot (the hourly one and the one after an OTA), with the value the chip
+  reported at boot; `0` is a real value and is sent. It is appended after every other key, after the 13
+  of section 5, the ESP8266 heap keys and the ESP32 relay keys, so those keep their order. A value above
+  255 would be sent as `255`; none of the values below is.
+- **The number is chip-specific.** It is the SDK's own code, not a Fry enumeration, and the `os` key in
+  the same body says which table applies:
+
+| Code | ESP32 / ESP32-S3 / ESP32-C3 (`esp_reset_reason_t`) | ESP8266 (`rst_info.reason`) |
+|---|---|---|
+| 0 | unknown | power-on (normal start) |
+| 1 | power-on | hardware watchdog reset |
+| 2 | external pin | exception reset |
+| 3 | software reset (`esp_restart`, an OTA restart) | software watchdog reset |
+| 4 | panic (exception) | software restart (`ESP.restart()`, an OTA restart) |
+| 5 | interrupt watchdog | wake from deep sleep |
+| 6 | task watchdog | external system reset (reset pin) |
+| 7 | other watchdog | not used |
+| 8 | wake from deep sleep | not used |
+| 9 | brownout | not used |
+| 10 and up | other `esp_reset_reason_t` codes of the SDK | not used |
+
+  Note that `0` is "power-on" on an ESP8266 and "unknown" on the ESP32 family.
+- **Compatibility.** A server that does not know the key ignores it (the installation body already
+  carries the heap and relay keys the same way); a board on firmware before this amendment sends no
+  `reset_reason`, and a reader treats an absent key as "not reported", never as `0`.
+- **Serial line added**, printed once at boot, directly after the `FRY boot v` banner of section 9, with
+  the same value the heartbeat sends:
+
+```
+[boot] reset_reason=<n>
 ```
